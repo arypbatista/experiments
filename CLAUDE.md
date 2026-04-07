@@ -16,12 +16,13 @@ src/
 │   ├── types.ts                  # ExperimentMeta + ExperimentEntry types
 │   └── <slug>/
 │       ├── meta.ts               # title, description, tags, date, thumbnail?
+│       ├── thumbnail.jpg         # optional screenshot, imported in meta.ts
 │       └── index.astro           # experiment content (no layout, no page)
 ├── layouts/
-│   ├── BaseLayout.astro          # base HTML for gallery
-│   └── ExperimentLayout.astro    # full-viewport wrapper with ← back nav
+│   ├── BaseLayout.astro          # base HTML shell (head, global CSS)
+│   └── ExperimentLayout.astro    # full-viewport wrapper: ← back nav + title/tags overlay
 ├── components/
-│   ├── Sidebar.astro             # fixed left sidebar with tag filters
+│   ├── Sidebar.astro             # fixed left sidebar with tag filters + social links
 │   └── ExperimentCard.astro      # thumbnail card used in the gallery grid
 └── pages/
     ├── index.astro               # gallery: auto-discovers all experiments via glob
@@ -42,13 +43,12 @@ const meta: ExperimentMeta = {
   description: 'One sentence about what this does.',
   tags: ['canvas', 'three.js'],
   date: '2026-04-07',
-  // thumbnail: '/thumbnails/my-experiment.png', // optional
 };
 
 export default meta;
 ```
 
-3. Add `index.astro` with the experiment content — no layout needed, just the content:
+3. Add `index.astro` with the experiment content — no layout needed, ExperimentLayout is applied automatically by `[slug].astro`:
 
 ```astro
 ---
@@ -64,7 +64,30 @@ export default meta;
 
 The gallery and routing pick it up automatically — no registration needed.
 
-Thumbnails go in `public/thumbnails/<slug>.png`.
+### Thumbnails
+
+Thumbnails are optional. To add one, place a `thumbnail.jpg` next to the experiment and import it in `meta.ts`:
+
+```ts
+import type { ExperimentMeta } from '../types';
+import thumbnail from './thumbnail.jpg';
+
+const meta: ExperimentMeta = {
+  title: 'My Experiment',
+  description: 'One sentence about what this does.',
+  tags: ['canvas'],
+  date: '2026-04-07',
+  thumbnail,
+};
+
+export default meta;
+```
+
+Astro processes the imported image at build time (`ImageMetadata`). Without a thumbnail, the gallery card shows a deterministic dark placeholder color derived from the slug.
+
+## Tag filtering
+
+The sidebar lists all unique tags across experiments. Clicking a tag dims cards that don't match. Multiple tags use OR logic — a card is visible if it matches any active tag.
 
 ## Environment variables
 
