@@ -1,15 +1,15 @@
 ---
-import type { ExperimentMeta } from '../experiments/index';
+import type { ExperimentEntry } from '../experiments/types';
 
 interface Props {
-  experiment: ExperimentMeta;
+  experiment: ExperimentEntry;
 }
 
 const { experiment } = Astro.props;
 
 // Deterministic dark placeholder color from slug
 const palette = ['#0d1b2a', '#1b2838', '#0f2027', '#1a1a2e', '#16213e', '#0d0d1a', '#1b1f2e'];
-const colorIndex = experiment.slug.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0) % palette.length;
+const colorIndex = experiment.slug.split('').reduce((acc: number, c: string) => acc + c.charCodeAt(0), 0) % palette.length;
 const placeholderBg = palette[colorIndex];
 ---
 

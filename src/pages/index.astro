@@ -2,7 +2,14 @@
 import BaseLayout from '../layouts/BaseLayout.astro';
 import Sidebar from '../components/Sidebar.astro';
 import ExperimentCard from '../components/ExperimentCard.astro';
-import { experiments } from '../experiments/index';
+import type { ExperimentMeta, ExperimentEntry } from '../experiments/types';
+
+const metaModules = import.meta.glob<{ default: ExperimentMeta }>('../experiments/*/meta.ts', { eager: true });
+
+const experiments: ExperimentEntry[] = Object.entries(metaModules).map(([path, mod]) => ({
+  slug: path.split('/').at(-2)!,
+  ...mod.default,
+}));
 
 const allTags = [...new Set(experiments.flatMap(e => e.tags))].sort();
 ---
