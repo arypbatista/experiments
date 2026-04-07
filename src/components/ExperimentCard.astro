@@ -1,0 +1,108 @@
+---
+import type { ExperimentMeta } from '../experiments/index';
+
+interface Props {
+  experiment: ExperimentMeta;
+}
+
+const { experiment } = Astro.props;
+
+// Deterministic dark placeholder color from slug
+const palette = ['#0d1b2a', '#1b2838', '#0f2027', '#1a1a2e', '#16213e', '#0d0d1a', '#1b1f2e'];
+const colorIndex = experiment.slug.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0) % palette.length;
+const placeholderBg = palette[colorIndex];
+---
+
+<a
+  href={`/experiments/${experiment.slug}`}
+  class="experiment-card"
+  data-tags={experiment.tags.join(' ')}
+  title={experiment.title}
+>
+  {experiment.thumbnail ? (
+    <img
+      src={experiment.thumbnail}
+      alt={experiment.title}
+      class="card-image"
+      loading="lazy"
+    />
+  ) : (
+    <div class="card-placeholder" style={`background: ${placeholderBg};`}>
+      <span class="placeholder-title">{experiment.title}</span>
+    </div>
+  )}
+
+  <div class="card-overlay">
+    <span class="overlay-title">{experiment.title}</span>
+    {experiment.tags.length > 0 && (
+      <span class="overlay-tags">{experiment.tags.join(', ')}</span>
+    )}
+  </div>
+</a>
+
+<style>
+  .experiment-card {
+    display: block;
+    position: relative;
+    aspect-ratio: 4 / 3;
+    overflow: hidden;
+    cursor: pointer;
+    text-decoration: none;
+  }
+
+  .card-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform 0.3s ease;
+  }
+
+  .experiment-card:hover .card-image {
+    transform: scale(1.04);
+  }
+
+  .card-placeholder {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .placeholder-title {
+    color: #333;
+    font-size: 11px;
+    text-align: center;
+    padding: 0 8px;
+  }
+
+  .card-overlay {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 55%);
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 8px;
+    transition: opacity 0.2s ease;
+  }
+
+  .experiment-card:hover .card-overlay {
+    opacity: 1;
+  }
+
+  .overlay-title {
+    color: #fff;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.3;
+  }
+
+  .overlay-tags {
+    color: #888;
+    font-size: 10px;
+    margin-top: 2px;
+  }
+</style>

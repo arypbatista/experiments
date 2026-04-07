@@ -1,0 +1,58 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  tags?: string[];
+}
+
+const { title, tags = [] } = Astro.props;
+---
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" href="/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title} — experiments</title>
+    <style>
+      html, body {
+        background: #000;
+        overflow: hidden;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Overlay nav bar -->
+    <nav style="
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 1rem;
+      height: 40px;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.75) 0%, transparent 100%);
+    ">
+      <a href="/" style="color: #77ddff; font-size: 12px; letter-spacing: 0.05em; text-decoration: none;"
+         onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#77ddff'">
+        ← experiments
+      </a>
+      <span style="color: #666; font-size: 12px;">{title}</span>
+      <div style="display: flex; gap: 8px;">
+        {tags.map(tag => (
+          <span style="color: #444; font-size: 11px;">{tag}</span>
+        ))}
+      </div>
+    </nav>
+
+    <!-- Full-viewport experiment area -->
+    <div style="width: 100vw; height: 100vh;">
+      <slot />
+    </div>
+  </body>
+</html>

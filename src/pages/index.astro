@@ -1,17 +1,72 @@
 ---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Sidebar from '../components/Sidebar.astro';
+import ExperimentCard from '../components/ExperimentCard.astro';
+import { experiments } from '../experiments/index';
 
+const allTags = [...new Set(experiments.flatMap(e => e.tags))].sort();
 ---
 
-<html lang="en">
-	<head>
-		<meta charset="utf-8" />
-		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-		<link rel="icon" href="/favicon.ico" />
-		<meta name="viewport" content="width=device-width" />
-		<meta name="generator" content={Astro.generator} />
-		<title>Astro</title>
-	</head>
-	<body>
-		<h1>Astro</h1>
-	</body>
-</html>
+<BaseLayout>
+  <div id="layout">
+    <Sidebar tags={allTags} />
+
+    <main id="main">
+      <div id="grid">
+        {experiments.map(experiment => (
+          <ExperimentCard experiment={experiment} />
+        ))}
+      </div>
+    </main>
+  </div>
+</BaseLayout>
+
+<style>
+  #layout {
+    display: flex;
+    height: 100vh;
+    background: #111;
+  }
+
+  #main {
+    margin-left: var(--sidebar-width);
+    flex: 1;
+    overflow-y: auto;
+    height: 100vh;
+  }
+
+  #grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 2px;
+    padding: 2px;
+  }
+</style>
+
+<script>
+  const tagButtons = document.querySelectorAll<HTMLButtonElement>('.tag-filter');
+  const cards = document.querySelectorAll<HTMLElement>('.experiment-card');
+
+  let activeTags = new Set<string>();
+
+  tagButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tag = btn.dataset.tag!;
+
+      if (activeTags.has(tag)) {
+        activeTags.delete(tag);
+        btn.classList.remove('active');
+      } else {
+        activeTags.add(tag);
+        btn.classList.add('active');
+      }
+
+      cards.forEach(card => {
+        const cardTags = (card.dataset.tags ?? '').split(' ');
+        const visible = activeTags.size === 0 || cardTags.some(t => activeTags.has(t));
+        card.style.opacity = visible ? '1' : '0.1';
+        card.style.pointerEvents = visible ? '' : 'none';
+      });
+    });
+  });
+</script>

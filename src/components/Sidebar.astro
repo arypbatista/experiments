@@ -1,0 +1,153 @@
+---
+interface Props {
+  tags: string[];
+}
+
+const { tags } = Astro.props;
+
+const githubUrl = import.meta.env.GITHUB_URL;
+const linkedinUrl = import.meta.env.LINKEDIN_URL;
+---
+
+<aside id="sidebar">
+  <!-- Title -->
+  <div class="sidebar-header">
+    <a href="/" class="site-title">experiments</a>
+  </div>
+
+  <div class="sidebar-body">
+    <!-- Source section -->
+    <section class="sidebar-section">
+      <h3 class="section-label">Links</h3>
+      <ul>
+        <li>
+          <a
+            href="https://github.com"
+            target="_blank"
+            rel="noopener"
+            class="sidebar-link">will add links</a
+          >
+        </li>
+      </ul>
+    </section>
+
+    <!-- Tags section -->
+    {
+      tags.length > 0 && (
+        <section class="sidebar-section">
+          <h3 class="section-label">Tags</h3>
+          <ul>
+            {tags.map((tag) => (
+              <li>
+                <button class="sidebar-link tag-filter" data-tag={tag}>
+                  {tag}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )
+    }
+
+    <!-- Social section -->
+    <section class="sidebar-section">
+      <h3 class="section-label">Follow</h3>
+      <ul>
+        <li>
+          <a
+            href={githubUrl}
+            target="_blank"
+            rel="noopener"
+            class="sidebar-link">github</a
+          >
+        </li>
+        <li>
+          <a
+            href={linkedinUrl}
+            target="_blank"
+            rel="noopener"
+            class="sidebar-link">linkedin</a
+          >
+        </li>
+      </ul>
+    </section>
+  </div>
+</aside>
+
+<style>
+  aside {
+    position: fixed;
+    left: 0;
+    top: 0;
+    height: 100vh;
+    width: var(--sidebar-width);
+    background: #141414;
+    border-right: 1px solid #222;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sidebar-header {
+    padding: 24px 20px 20px;
+    border-bottom: 1px solid #1e1e1e;
+  }
+
+  .site-title {
+    color: #fff;
+    text-decoration: none;
+    font-size: 13px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    font-weight: 500;
+  }
+
+  .site-title:hover {
+    color: #77ddff;
+  }
+
+  .sidebar-body {
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  .sidebar-section ul {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .section-label {
+    color: #77ddff;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    font-weight: normal;
+  }
+
+  .sidebar-link {
+    color: #888;
+    text-decoration: none;
+    font-size: 13px;
+    font-family: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+    transition: color 0.15s;
+  }
+
+  .sidebar-link:hover {
+    color: #fff;
+  }
+
+  .tag-filter.active {
+    color: #fff;
+  }
+</style>
