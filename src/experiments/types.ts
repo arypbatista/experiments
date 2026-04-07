@@ -1,7 +1,9 @@
+import type { ImageMetadata } from 'astro';
+
 export interface ExperimentMeta {
   title: string;
   description: string;
-  thumbnail?: string; // path relative to /public, e.g. /thumbnails/hello-world.png
+  thumbnail?: ImageMetadata; // import from co-located thumbnail.jpg in meta.ts
   tags: string[];
   date: string; // ISO date
 }
