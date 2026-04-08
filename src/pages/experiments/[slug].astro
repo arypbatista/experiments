@@ -8,10 +8,12 @@ const pageModules = import.meta.glob<{ default: unknown }>('../../experiments/*/
 export async function getStaticPaths() {
   const metas = import.meta.glob<{ default: ExperimentMeta }>('../../experiments/*/meta.ts', { eager: true });
 
-  return Object.entries(metas).map(([path, mod]) => {
-    const slug = path.split('/').at(-2)!;
-    return { params: { slug }, props: { meta: mod.default } };
-  });
+  return Object.entries(metas)
+    .filter(([, mod]) => !mod.default.hidden)
+    .map(([path, mod]) => {
+      const slug = path.split('/').at(-2)!;
+      return { params: { slug }, props: { meta: mod.default } };
+    });
 }
 
 const { slug } = Astro.params;
