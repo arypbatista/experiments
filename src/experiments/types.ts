@@ -7,6 +7,7 @@ export interface ExperimentMeta {
   tags: string[];
   date: string; // ISO date
   hidden?: boolean; // if true, excluded from gallery and routing
+  notes?: string;   // instructions or notes shown in the experiment overlay
 }
 
 // ExperimentMeta enriched with the slug derived from the folder name
