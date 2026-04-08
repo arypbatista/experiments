@@ -17,6 +17,20 @@ const linkedinUrl = import.meta.env.LINKEDIN_URL;
   </div>
 
   <div class="sidebar-body">
+    <!-- Search -->
+    <section class="sidebar-section">
+      <h3 class="section-label">Search</h3>
+      <div class="search-wrapper">
+        <input
+          id="search-input"
+          type="search"
+          placeholder="name or tag…"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </div>
+    </section>
+
     <!-- Source section -->
     <section class="sidebar-section">
       <h3 class="section-label">Links</h3>
@@ -186,5 +200,36 @@ const linkedinUrl = import.meta.env.LINKEDIN_URL;
 
   .tag-filter.active {
     color: #fff;
+  }
+
+  .search-wrapper {
+    display: flex;
+  }
+
+  #search-input {
+    width: 100%;
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 3px;
+    color: #ccc;
+    font-size: 12px;
+    font-family: inherit;
+    padding: 6px 8px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  #search-input::placeholder {
+    color: #444;
+  }
+
+  #search-input:focus {
+    border-color: #444;
+    color: #fff;
+  }
+
+  /* hide the native clear button — we rely on keyboard */
+  #search-input::-webkit-search-cancel-button {
+    display: none;
   }
 </style>

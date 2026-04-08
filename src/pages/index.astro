@@ -35,6 +35,7 @@ const allTags = [...new Set(experiments.flatMap(e => e.tags))].sort();
         {experiments.map(experiment => (
           <ExperimentCard experiment={experiment} />
         ))}
+        <p id="no-results">No experiments match.</p>
       </div>
     </main>
   </div>
@@ -139,9 +140,20 @@ const allTags = [...new Set(experiments.flatMap(e => e.tags))].sort();
       grid-template-columns: 1fr;
     }
   }
+
+  #no-results {
+    display: none;
+    grid-column: 1 / -1;
+    color: #444;
+    font-size: 13px;
+    padding: 40px 0;
+    text-align: center;
+  }
 </style>
 
 <script>
+  import Fuse from 'fuse.js';
+
   // Mobile sidebar toggle
   const sidebar = document.getElementById('sidebar')!;
   const backdrop = document.getElementById('backdrop')!;
@@ -162,16 +174,58 @@ const allTags = [...new Set(experiments.flatMap(e => e.tags))].sort();
   closeBtn.addEventListener('click', closeSidebar);
   backdrop.addEventListener('click', closeSidebar);
 
-  // Tag filtering
-  const tagButtons = document.querySelectorAll<HTMLButtonElement>('.tag-filter');
+  // Build Fuse index from card DOM data
   const cards = document.querySelectorAll<HTMLElement>('.experiment-card');
 
+  type CardEntry = { slug: string; title: string; tags: string[] };
+  const entries: CardEntry[] = Array.from(cards).map(card => ({
+    slug: card.dataset.slug!,
+    title: card.dataset.title!,
+    tags: (card.dataset.tags ?? '').split(' ').filter(Boolean),
+  }));
+
+  const fuse = new Fuse(entries, {
+    keys: ['title', 'tags'],
+    threshold: 0.35,
+    ignoreLocation: true,
+  });
+
+  // Filtering state
+  const tagButtons = document.querySelectorAll<HTMLButtonElement>('.tag-filter');
+  const searchInput = document.getElementById('search-input') as HTMLInputElement;
+  const noResults = document.getElementById('no-results') as HTMLElement;
+
   let activeTags = new Set<string>();
+  let searchQuery = '';
+
+  function applyFilters() {
+    let matchingSlugs: Set<string> | null = null;
+
+    if (searchQuery.trim()) {
+      const results = fuse.search(searchQuery.trim());
+      matchingSlugs = new Set(results.map(r => r.item.slug));
+    }
+
+    let visibleCount = 0;
+
+    cards.forEach(card => {
+      const slug = card.dataset.slug!;
+      const cardTags = (card.dataset.tags ?? '').split(' ').filter(Boolean);
+
+      const passesSearch = matchingSlugs === null || matchingSlugs.has(slug);
+      const passesTags = activeTags.size === 0 || cardTags.some(t => activeTags.has(t));
+
+      const visible = passesSearch && passesTags;
+      card.style.display = visible ? '' : 'none';
+      if (visible) visibleCount++;
+    });
+
+    noResults.style.display = visibleCount === 0 ? 'block' : 'none';
+  }
 
   tagButtons.forEach(btn => {
     btn.addEventListener('click', () => {
       const tag = btn.dataset.tag!;
-
       if (activeTags.has(tag)) {
         activeTags.delete(tag);
         btn.classList.remove('active');
@@ -179,13 +233,12 @@ const allTags = [...new Set(experiments.flatMap(e => e.tags))].sort();
         activeTags.add(tag);
         btn.classList.add('active');
       }
-
-      cards.forEach(card => {
-        const cardTags = (card.dataset.tags ?? '').split(' ');
-        const visible = activeTags.size === 0 || cardTags.some(t => activeTags.has(t));
-        card.style.opacity = visible ? '1' : '0.1';
-        card.style.pointerEvents = visible ? '' : 'none';
-      });
+      applyFilters();
     });
+  });
+
+  searchInput.addEventListener('input', () => {
+    searchQuery = searchInput.value;
+    applyFilters();
   });
 </script>

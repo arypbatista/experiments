@@ -16,6 +16,8 @@ const placeholderBg = palette[colorIndex];
 <a
   href={`/experiments/${experiment.slug}`}
   class="experiment-card"
+  data-slug={experiment.slug}
+  data-title={experiment.title}
   data-tags={experiment.tags.join(' ')}
   title={experiment.title}
 >
