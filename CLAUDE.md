@@ -85,6 +85,29 @@ export default meta;
 
 Astro processes the imported image at build time (`ImageMetadata`). Without a thumbnail, the gallery card shows a deterministic dark placeholder color derived from the slug.
 
+### Notes
+
+`notes` shows an overlay panel in the bottom-left corner of the experiment with a title and a close button. Use it for instructions or controls. `mobileNotes` overrides the text on touch devices; if omitted, `notes` is shown on all devices.
+
+```ts
+const meta: ExperimentMeta = {
+  // ...
+  notes: 'Click and drag to interact. Press R to reset.',
+  mobileNotes: 'Tap and drag to interact.',
+};
+```
+
+### Hiding an experiment
+
+Set `hidden: true` in `meta.ts` to exclude an experiment from the gallery and disable its route:
+
+```ts
+const meta: ExperimentMeta = {
+  // ...
+  hidden: true,
+};
+```
+
 ## Tag filtering
 
 The sidebar lists all unique tags across experiments. Clicking a tag dims cards that don't match. Multiple tags use OR logic — a card is visible if it matches any active tag.
