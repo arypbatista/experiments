@@ -23,6 +23,6 @@ const pageKey = `../../experiments/${slug}/index.astro`;
 const Page = (await pageModules[pageKey]()).default as any;
 ---
 
-<ExperimentLayout title={meta.title} tags={meta.tags} notes={meta.notes}>
+<ExperimentLayout title={meta.title} tags={meta.tags} notes={meta.notes} mobileNotes={meta.mobileNotes}>
   <Page />
 </ExperimentLayout>
