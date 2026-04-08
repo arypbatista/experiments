@@ -11,9 +11,6 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.2.2
         version: 4.2.2(vite@7.3.2(jiti@2.6.1)(lightningcss@1.32.0))
-      '@types/three':
-        specifier: ^0.183.1
-        version: 0.183.1
       astro:
         specifier: ^6.1.4
         version: 6.1.4(jiti@2.6.1)(lightningcss@1.32.0)(rollup@4.60.1)
@@ -26,6 +23,10 @@ importers:
       three:
         specifier: ^0.183.2
         version: 0.183.2
+    devDependencies:
+      '@types/three':
+        specifier: ^0.183.1
+        version: 0.183.1
 
 packages:
 
