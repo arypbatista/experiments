@@ -19,7 +19,8 @@ src/
 │   └── <slug>/
 │       ├── meta.ts               # title, description, tags, date, thumbnail?
 │       ├── thumbnail.jpg         # optional screenshot, imported in meta.ts
-│       └── index.astro           # experiment content (no layout, no page)
+│       ├── index.astro           # experiment content (no layout, no page)
+│       └── README.md             # optional: physics, controls, tuning notes
 ├── layouts/
 │   ├── BaseLayout.astro          # base HTML shell (head, global CSS)
 │   └── ExperimentLayout.astro    # full-viewport wrapper: ← back nav + title/tags overlay
@@ -65,6 +66,10 @@ export default meta;
 ```
 
 The gallery and routing pick it up automatically — no registration needed.
+
+### README
+
+A `README.md` inside the experiment folder is optional but useful for complex experiments. Document physics constants, control schemes, algorithmic decisions, and tuning tips there — anything too detailed for `description` or `notes` in `meta.ts`.
 
 ### Thumbnails
 
