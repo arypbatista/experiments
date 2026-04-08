@@ -93,7 +93,8 @@ const { src: imageSrc, width: imageW, height: imageH } = src;
 
     // ── Three.js point cloud ─────────────────────────────────────────────────
     function start(img: HTMLImageElement) {
-      const SPACING       = 7;
+      const isMobile = window.matchMedia('(pointer: coarse)').matches;
+      const SPACING  = isMobile ? 12 : 7;
       const BUBBLE_RADIUS = 60;
       const BUBBLE_Z      = 2.5;
       const BUBBLE_SPREAD = 0.15;
