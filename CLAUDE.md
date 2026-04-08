@@ -121,6 +121,61 @@ GITHUB_URL=
 LINKEDIN_URL=
 ```
 
+## Gotchas
+
+### `define:vars` disables npm imports in scripts
+
+Adding `define:vars` to a `<script>` tag turns it into an inline script — Vite no longer processes it, so `import` from npm packages silently fails. Instead, pass build-time values via `data-*` attributes on a DOM element and read them in a plain `<script>`:
+
+```astro
+---
+const value = 'hello';
+---
+<canvas id="c" data-value={value}></canvas>
+
+<script>
+  import { something } from 'some-package'; // works — no define:vars
+  const value = (document.getElementById('c') as HTMLCanvasElement).dataset.value;
+</script>
+```
+
+### Notes and mobileNotes are layout responsibilities
+
+Do not add hint overlays or instruction UI inside `index.astro`. Author `notes` and `mobileNotes` in `meta.ts` — `ExperimentLayout` renders the panel automatically with a close button and mobile awareness.
+
+### Transparent PNG sampling on offscreen canvas
+
+When reading pixel data from a PNG with a transparent background, transparent pixels read as `rgba(0,0,0,0)` — luma=0, brightness=1 — which can flood a dot-grid with false positives. Always composite onto white before sampling:
+
+```ts
+ctx.fillStyle = '#fff';
+ctx.fillRect(0, 0, img.width, img.height);
+ctx.drawImage(img, 0, 0);
+```
+
+### Spring animation: integrate inside the render loop
+
+Don't use an animation library's own RAF loop for spring physics when you already have a render loop — running two loops creates a race where the spring value is replaced before the frame renders. Instead, step the spring manually inside `requestAnimationFrame`:
+
+```ts
+function tickSpring() {
+  velX += (targetX - springX) * STIFFNESS;
+  velX *= DAMPING;
+  springX += velX;
+  // same for Y
+}
+
+function draw(t) {
+  tickSpring();
+  // use springX, springY
+  requestAnimationFrame(draw);
+}
+```
+
+### Mobile detection
+
+Use `window.matchMedia('(pointer: coarse)').matches` to detect touch devices — not `navigator.userAgent`. For zoom, detect portrait orientation with `window.innerHeight > window.innerWidth` and adjust the camera accordingly.
+
 ## Dev
 
 ```bash
