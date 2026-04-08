@@ -1,43 +1,100 @@
-# Astro Starter Kit: Minimal
+# experiments
 
-```sh
-pnpm create astro@latest -- --template minimal
+A personal creative coding gallery. Each experiment is an isolated, full-page canvas piece exploring animation, generative art, and interactive graphics on the web.
+
+## Stack
+
+- [Astro](https://astro.build) — static site generator, zero JS by default
+- Tailwind CSS v4 (via `@tailwindcss/vite`)
+- TypeScript
+
+## Structure
+
+```
+src/
+├── experiments/
+│   ├── types.ts                  # ExperimentMeta + ExperimentEntry types
+│   └── <slug>/
+│       ├── meta.ts               # title, description, tags, date, thumbnail?
+│       ├── thumbnail.jpg         # optional screenshot, imported in meta.ts
+│       └── index.astro           # experiment content (no layout, no page)
+├── layouts/
+│   ├── BaseLayout.astro          # base HTML shell (head, global CSS)
+│   └── ExperimentLayout.astro    # full-viewport wrapper: ← back nav + title/tags overlay
+├── components/
+│   ├── Sidebar.astro             # fixed left sidebar with tag filters + social links
+│   └── ExperimentCard.astro      # thumbnail card used in the gallery grid
+└── pages/
+    ├── index.astro               # gallery: auto-discovers all experiments via glob
+    └── experiments/
+        └── [slug].astro          # dynamic route: wraps experiment in ExperimentLayout
 ```
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
+## Adding an experiment
 
-## 🚀 Project Structure
+1. Create a folder `src/experiments/<slug>/`
+2. Add `meta.ts` exporting a default `ExperimentMeta` object:
 
-Inside of your Astro project, you'll see the following folders and files:
+```ts
+import type { ExperimentMeta } from '../types';
 
-```text
-/
-├── public/
-├── src/
-│   └── pages/
-│       └── index.astro
-└── package.json
+const meta: ExperimentMeta = {
+  title: 'My Experiment',
+  description: 'One sentence about what this does.',
+  tags: ['canvas', 'three.js'],
+  date: '2026-04-07',
+};
+
+export default meta;
 ```
 
-Astro looks for `.astro` or `.md` files in the `src/pages/` directory. Each page is exposed as a route based on its file name.
+3. Add `index.astro` with the experiment content — no layout needed, `ExperimentLayout` is applied automatically by `[slug].astro`:
 
-There's nothing special about `src/components/`, but that's where we like to put any Astro/React/Vue/Svelte/Preact components.
+```astro
+---
+// import whatever you need (Three.js, GSAP, P5, etc.)
+---
 
-Any static assets, like images, can be placed in the `public/` directory.
+<canvas id="canvas" style="display:block;width:100%;height:100%;"></canvas>
 
-## 🧞 Commands
+<script>
+  // experiment code
+</script>
+```
 
-All commands are run from the root of the project, from a terminal:
+The gallery and routing pick it up automatically — no registration needed.
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `pnpm install`             | Installs dependencies                            |
-| `pnpm dev`             | Starts local dev server at `localhost:4321`      |
-| `pnpm build`           | Build your production site to `./dist/`          |
-| `pnpm preview`         | Preview your build locally, before deploying     |
-| `pnpm astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `pnpm astro -- --help` | Get help using the Astro CLI                     |
+### Thumbnails
 
-## 👀 Want to learn more?
+Thumbnails are optional. Place a `thumbnail.jpg` next to the experiment and import it in `meta.ts`:
 
-Feel free to check [our documentation](https://docs.astro.build) or jump into our [Discord server](https://astro.build/chat).
+```ts
+import thumbnail from './thumbnail.jpg';
+
+const meta: ExperimentMeta = {
+  // ...
+  thumbnail,
+};
+```
+
+Astro processes the image at build time. Without a thumbnail, the gallery card shows a deterministic dark placeholder color derived from the slug.
+
+## Dev
+
+```bash
+pnpm install
+pnpm dev       # http://localhost:4321
+pnpm build
+pnpm preview
+```
+
+Requires Node >= 22.12.0 (Astro 6 constraint).
+
+## Environment variables
+
+Copy `.env.example` to `.env` and fill in:
+
+```
+GITHUB_URL=
+LINKEDIN_URL=
+```
