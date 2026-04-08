@@ -104,15 +104,24 @@
   );
   camera.position.z = 1;
 
-  window.addEventListener("resize", () => {
-    W = window.innerWidth;
-    H = window.innerHeight;
-    renderer.setSize(W, H);
+  function updateCamera() {
+    const mobile = Math.min(W, H) < 600;
     camera.left = -W / 2;
     camera.right = W / 2;
     camera.top = H / 2;
     camera.bottom = -H / 2;
+    camera.zoom = mobile ? 0.5 : 1.0;
+    // On mobile, shift Earth down so the top UI controls don't overlap the scene
+    camera.position.y = mobile ? 120 : 0;
     camera.updateProjectionMatrix();
+  }
+  updateCamera();
+
+  window.addEventListener("resize", () => {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    renderer.setSize(W, H);
+    updateCamera();
   });
 
   // ── Geometry helpers ───────────────────────────────────────────────────────

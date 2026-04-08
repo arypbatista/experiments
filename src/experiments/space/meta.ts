@@ -6,6 +6,7 @@ const meta: ExperimentMeta = {
   tags: ['webgl', 'physics', 'three.js'],
   date: '2026-04-07',
   notes: 'Drag to slingshot a ship. A/D to rotate heading. B to burn. L to auto-launch. C to crash one ship.',
+  mobileNotes: 'Tap and drag to slingshot a ship toward any direction.',
 };
 
 export default meta;
