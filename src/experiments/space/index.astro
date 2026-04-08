@@ -3,27 +3,56 @@
 ---
 
 <canvas id="canvas" style="display:block;width:100%;height:100%;"></canvas>
+<div style="position:fixed;bottom:24px;right:24px;display:flex;gap:8px;">
+  <button id="launch-btn" style="background:transparent;border:1px solid rgba(255,255,255,0.4);color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;">LAUNCH [L]</button>
+  <button id="burn-btn" style="background:transparent;border:1px solid rgba(255,255,0,0.5);color:rgba(255,255,0,0.8);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;">BURN [B]</button>
+  <button id="crash-btn" style="background:transparent;border:1px solid rgba(255,255,255,0.4);color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;">CRASH [C]</button>
+</div>
+
+<div id="launch-controls" style="position:fixed;top:24px;right:24px;font-family:monospace;font-size:11px;color:rgba(255,255,255,0.7);display:flex;flex-direction:column;gap:8px;min-width:200px;">
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="impulse-label">impulse: 1.05</span>
+    <input id="impulse-range" type="range" min="0.8" max="1.5" step="0.01" value="1.05"
+      style="accent-color:white;width:100%;" />
+  </label>
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="angle-label">angle offset: 0.12 rad</span>
+    <input id="angle-range" type="range" min="-0.5" max="0.5" step="0.01" value="0.12"
+      style="accent-color:white;width:100%;" />
+  </label>
+</div>
 
 <script>
-  import * as THREE from 'three';
+  import * as THREE from "three";
 
   // ── Renderer & camera ──────────────────────────────────────────────────────
-  const canvas = document.getElementById('canvas') as HTMLCanvasElement;
-  let W = window.innerWidth, H = window.innerHeight;
+  const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+  let W = window.innerWidth,
+    H = window.innerHeight;
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setSize(W, H);
   renderer.setClearColor(0x000000, 1);
 
   const scene = new THREE.Scene();
-  const camera = new THREE.OrthographicCamera(-W / 2, W / 2, H / 2, -H / 2, 0.1, 10);
+  const camera = new THREE.OrthographicCamera(
+    -W / 2,
+    W / 2,
+    H / 2,
+    -H / 2,
+    0.1,
+    10,
+  );
   camera.position.z = 1;
 
-  window.addEventListener('resize', () => {
-    W = window.innerWidth; H = window.innerHeight;
+  window.addEventListener("resize", () => {
+    W = window.innerWidth;
+    H = window.innerHeight;
     renderer.setSize(W, H);
-    camera.left = -W / 2; camera.right = W / 2;
-    camera.top = H / 2; camera.bottom = -H / 2;
+    camera.left = -W / 2;
+    camera.right = W / 2;
+    camera.top = H / 2;
+    camera.bottom = -H / 2;
     camera.updateProjectionMatrix();
   });
 
@@ -35,9 +64,10 @@
       const a = (i / segs) * Math.PI * 2;
       pts.push(new THREE.Vector3(Math.cos(a) * r, Math.sin(a) * r, 0));
     }
-    const geo = new THREE.BufferGeometry().setFromPoints(pts);
-    const mat = new THREE.LineBasicMaterial({ color: 0xffffff });
-    return new THREE.Line(geo, mat);
+    return new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineBasicMaterial({ color: 0xffffff }),
+    );
   }
 
   function makeDashedCircle(r: number, segs = 128): THREE.Line {
@@ -46,206 +76,410 @@
       const a = (i / segs) * Math.PI * 2;
       pts.push(new THREE.Vector3(Math.cos(a) * r, Math.sin(a) * r, 0));
     }
-    const geo = new THREE.BufferGeometry().setFromPoints(pts);
-    const mat = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 12, gapSize: 7 });
-    const line = new THREE.Line(geo, mat);
+    const line = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineDashedMaterial({
+        color: 0xffffff,
+        dashSize: 12,
+        gapSize: 7,
+      }),
+    );
     line.computeLineDistances();
     return line;
   }
 
-  function makeShipSquare(s: number): THREE.Line {
-    const pts = [
-      new THREE.Vector3(-s, -s, 0), new THREE.Vector3(s, -s, 0),
-      new THREE.Vector3(s,  s, 0), new THREE.Vector3(-s,  s, 0),
-      new THREE.Vector3(-s, -s, 0),
-    ];
-    const geo = new THREE.BufferGeometry().setFromPoints(pts);
-    const mat = new THREE.LineBasicMaterial({ color: 0xffffff });
-    return new THREE.Line(geo, mat);
+  function makeShipSquare(): THREE.Line {
+    const s = 5;
+    return new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-s, -s, 0),
+        new THREE.Vector3(s, -s, 0),
+        new THREE.Vector3(s, s, 0),
+        new THREE.Vector3(-s, s, 0),
+        new THREE.Vector3(-s, -s, 0),
+      ]),
+      new THREE.LineBasicMaterial({ color: 0xffffff }),
+    );
   }
 
   // ── Physics constants ──────────────────────────────────────────────────────
-  // Custom Newtonian gravity — no physics lib needed for orbital mechanics.
-  // G and masses are tuned so the Moon has a ~20 s period at MOON_ORBIT_R.
 
-  const G       = 1;
+  const G = 1;
   const M_EARTH = 1_500_000;
-  const M_MOON  = 120_000;
+  // Moon mass is weaker — same gravity formula as Earth, just smaller mass.
+  // Increase to make Moon pull stronger; decrease to make it barely felt.
+  const M_MOON = 350_000;
+  const R_EARTH = 25;
+  const R_MOON = 12;
+  const MOON_ORBIT_R = 250;
+  const MOON_OMEGA = Math.sqrt((G * M_EARTH) / MOON_ORBIT_R ** 3);
+  const A_XFER = (R_EARTH + MOON_ORBIT_R) / 2;
+  const T_XFER_HALF = Math.PI * Math.sqrt(A_XFER ** 3 / (G * M_EARTH));
+  const V_LAUNCH_BASE = Math.sqrt(G * M_EARTH * (2 / R_EARTH - 1 / A_XFER));
+  const MOON_START = Math.PI - MOON_OMEGA * T_XFER_HALF + 0.15;
+  const SLING_SCALE = 3.3; // px drag → px/s velocity
 
-  const R_EARTH      = 25;   // visual + collision radius (px)
-  const R_MOON       = 12;   // visual + collision radius (px)
-  const MOON_ORBIT_R = 250;  // Moon's orbital radius from Earth (px)
+  // ── Tunable auto-launch parameters ────────────────────────────────────────
+  let launchImpulse = 1.05;  // multiplier on V_LAUNCH_BASE
+  let launchAngleOffset = 0.12; // rad ahead of predicted Moon position
 
-  // Derived
-  const MOON_OMEGA = Math.sqrt(G * M_EARTH / MOON_ORBIT_R ** 3); // ~0.31 rad/s → ~20 s period
-  const A_XFER     = (R_EARTH + MOON_ORBIT_R) / 2;               // Hohmann semi-major axis
-  const T_XFER_HALF = Math.PI * Math.sqrt(A_XFER ** 3 / (G * M_EARTH)); // ~4.1 s
-  const MOON_SOI   = MOON_ORBIT_R * (M_MOON / M_EARTH) ** 0.4;  // ~57 px
-  const V_LAUNCH   = Math.sqrt(G * M_EARTH * (2 / R_EARTH - 1 / A_XFER)); // ~330 px/s
+  // ── Static scene objects ───────────────────────────────────────────────────
 
-  // Moon starts so it arrives near apoapsis when the ship completes the transfer.
-  // +0.15 rad offset prevents the ship from arriving dead-center on the Moon.
-  const MOON_START_ANGLE = Math.PI - MOON_OMEGA * T_XFER_HALF + 0.15;
-
-  const SHIP_MOON_ORBIT_R = 40; // visual orbit ring radius around Moon (px)
-
-  // ── Scene objects ──────────────────────────────────────────────────────────
-
-  const earthMesh     = makeCircleLine(R_EARTH);
-  scene.add(earthMesh);
-
-  const moonOrbitRing = makeDashedCircle(MOON_ORBIT_R); // Moon's orbital path (centered at Earth)
+  scene.add(makeCircleLine(R_EARTH));
+  const moonOrbitRing = makeDashedCircle(MOON_ORBIT_R);
   scene.add(moonOrbitRing);
-
-  const moonMesh      = makeCircleLine(R_MOON);
+  const moonMesh = makeCircleLine(R_MOON);
   scene.add(moonMesh);
 
-  const shipOrbitRing = makeDashedCircle(SHIP_MOON_ORBIT_R); // ship's orbit around Moon
-  shipOrbitRing.visible = false;
-  scene.add(shipOrbitRing);
+  // ── Ship pool ──────────────────────────────────────────────────────────────
 
-  const shipMesh = makeShipSquare(5);
-  scene.add(shipMesh);
+  interface Ship {
+    sx: number;
+    sy: number;
+    svx: number;
+    svy: number;
+    crashed: boolean;
+    crashTimer: number;
+    auto: boolean; // auto-ship restarts; user ships are removed
+    mesh: THREE.Line;
+  }
 
-  // ── Simulation state ───────────────────────────────────────────────────────
+  const ships: Ship[] = [];
 
-  type Phase = 'TO_MOON' | 'MOON_ORBIT' | 'TO_EARTH' | 'CRASHED';
+  function spawnShip(
+    sx: number,
+    sy: number,
+    svx: number,
+    svy: number,
+    auto = false,
+  ): Ship {
+    const mesh = makeShipSquare();
+    scene.add(mesh);
+    const ship: Ship = {
+      sx,
+      sy,
+      svx,
+      svy,
+      crashed: false,
+      crashTimer: 0,
+      auto,
+      mesh,
+    };
+    ships.push(ship);
+    return ship;
+  }
 
-  let moonAngle = MOON_START_ANGLE;
+  function removeShip(ship: Ship) {
+    scene.remove(ship.mesh);
+    ship.mesh.geometry.dispose();
+  }
+
+  // ── Burn particles ─────────────────────────────────────────────────────────
+
+  interface Particle {
+    life: number; // 1 → 0
+    mesh: THREE.Line;
+  }
+  const particles: Particle[] = [];
+
+  function spawnBurnParticle(x: number, y: number) {
+    const s = 3;
+    const geo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-s, -s, 0), new THREE.Vector3(s, -s, 0),
+      new THREE.Vector3(s,  s, 0),  new THREE.Vector3(-s,  s, 0),
+      new THREE.Vector3(-s, -s, 0),
+    ]);
+    const mat = new THREE.LineBasicMaterial({ color: 0xffff00, transparent: true, opacity: 1 });
+    const mesh = new THREE.Line(geo, mat);
+    mesh.position.set(x, y, 0);
+    scene.add(mesh);
+    particles.push({ life: 1, mesh });
+  }
+
+  function updateParticles(dt: number) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life -= dt * 3; // fades in ~0.33 s
+      if (p.life <= 0) {
+        scene.remove(p.mesh);
+        p.mesh.geometry.dispose();
+        particles.splice(i, 1);
+      } else {
+        (p.mesh.material as THREE.LineBasicMaterial).opacity = p.life;
+        const scale = 1 + (1 - p.life) * 2;
+        p.mesh.scale.set(scale, scale, 1);
+      }
+    }
+  }
+
+  // Initial auto-launched ship
+  spawnShip(R_EARTH, 0, 0, V_LAUNCH_BASE * launchImpulse, true);
+
+  // ── Moon state ─────────────────────────────────────────────────────────────
+
+  let moonAngle = MOON_START;
   let mx = Math.cos(moonAngle) * MOON_ORBIT_R;
   let my = Math.sin(moonAngle) * MOON_ORBIT_R;
 
-  let sx = R_EARTH, sy = 0;    // ship position
-  let svx = 0, svy = V_LAUNCH; // ship velocity (tangential launch → counterclockwise)
-  let phase: Phase = 'TO_MOON';
-
-  let orbitTimer = 0;  // time spent orbiting Moon
-  let phaseTimer = 0;  // safety timeout per phase
-  let crashTimer = 0;
-
-  const ORBIT_DURATION  = 10;   // seconds orbiting Moon before returning
-  const PHASE_TIMEOUT   = 50;   // force-restart if stuck
-  const CRASH_DELAY     = 1.5;  // pause before restart after crash
-
-  function reset() {
-    moonAngle = MOON_START_ANGLE;
-    mx = Math.cos(moonAngle) * MOON_ORBIT_R;
-    my = Math.sin(moonAngle) * MOON_ORBIT_R;
-    sx = R_EARTH; sy = 0; svx = 0; svy = V_LAUNCH;
-    phase = 'TO_MOON';
-    orbitTimer = 0; phaseTimer = 0;
-    shipOrbitRing.visible = false;
-    shipMesh.visible = true;
-  }
-
   // ── Physics step ──────────────────────────────────────────────────────────
 
-  function step(dt: number) {
-    // Moon moves kinematically (stable circular orbit)
-    moonAngle += MOON_OMEGA * dt;
-    mx = Math.cos(moonAngle) * MOON_ORBIT_R;
-    my = Math.sin(moonAngle) * MOON_ORBIT_R;
+  function autoLaunch() {
+    const futureMoonAngle = moonAngle + MOON_OMEGA * T_XFER_HALF + launchAngleOffset;
+    const launchAngle = futureMoonAngle + Math.PI;
+    const vl = V_LAUNCH_BASE * launchImpulse;
+    spawnShip(
+      Math.cos(launchAngle) * R_EARTH,
+      Math.sin(launchAngle) * R_EARTH,
+      -Math.sin(launchAngle) * vl,
+       Math.cos(launchAngle) * vl,
+    );
+  }
 
-    if (phase === 'CRASHED') {
-      crashTimer -= dt;
-      if (crashTimer <= 0) reset();
+  function stepShip(ship: Ship, dt: number) {
+    if (ship.crashed) {
+      ship.crashTimer -= dt;
+      if (ship.crashTimer <= 0) {
+        if (ship.auto) {
+          // Wait until every other ship is gone before relaunching
+          if (ships.some(s => s !== ship && !s.crashed)) {
+            ship.crashTimer = 0.5;
+            return;
+          }
+          const futureMoonAngle = moonAngle + MOON_OMEGA * T_XFER_HALF + launchAngleOffset;
+          const launchAngle = futureMoonAngle + Math.PI;
+          ship.sx = Math.cos(launchAngle) * R_EARTH;
+          ship.sy = Math.sin(launchAngle) * R_EARTH;
+          const vl = V_LAUNCH_BASE * launchImpulse;
+          ship.svx = -Math.sin(launchAngle) * vl;
+          ship.svy = Math.cos(launchAngle) * vl;
+          ship.crashed = false;
+          ship.mesh.visible = true;
+        } else {
+          removeShip(ship);
+          ships.splice(ships.indexOf(ship), 1);
+        }
+      }
       return;
     }
 
-    phaseTimer += dt;
-    if (phaseTimer > PHASE_TIMEOUT) {
-      phase = 'CRASHED'; crashTimer = CRASH_DELAY; shipMesh.visible = false;
-      return;
-    }
-
-    // Integrate gravity with sub-steps (Euler, 8 sub-steps per frame)
-    const SUB = 8, sdt = dt / SUB;
+    // Pure Newtonian gravity — same formula for Earth and Moon, just different masses.
+    // F = G*M/r² toward body  →  a = G*M*(body - ship) / r³
+    const SUB = 8,
+      sdt = dt / SUB;
     for (let i = 0; i < SUB; i++) {
-      const re  = Math.hypot(sx, sy);
-      const ae  = G * M_EARTH / (re * re);
-      const axe = (-sx / re) * ae,  aye = (-sy / re) * ae;
+      const re = Math.hypot(ship.sx, ship.sy);
+      const axe = (G * M_EARTH * -ship.sx) / (re * re * re);
+      const aye = (G * M_EARTH * -ship.sy) / (re * re * re);
 
-      const dxm = mx - sx, dym = my - sy;
-      const rm  = Math.hypot(dxm, dym);
-      const am  = G * M_MOON / (rm * rm);
-      const axm = (dxm / rm) * am, aym = (dym / rm) * am;
+      const dxm = mx - ship.sx,
+        dym = my - ship.sy;
+      const rm = Math.hypot(dxm, dym);
+      const axm = (G * M_MOON * dxm) / (rm * rm * rm);
+      const aym = (G * M_MOON * dym) / (rm * rm * rm);
 
-      svx += (axe + axm) * sdt;
-      svy += (aye + aym) * sdt;
-      sx  += svx * sdt;
-      sy  += svy * sdt;
+      ship.svx += (axe + axm) * sdt;
+      ship.svy += (aye + aym) * sdt;
+      ship.sx += ship.svx * sdt;
+      ship.sy += ship.svy * sdt;
     }
 
-    const re  = Math.hypot(sx, sy);
-    const dxm = mx - sx, dym = my - sy;
-    const rm  = Math.hypot(dxm, dym);
+    const re = Math.hypot(ship.sx, ship.sy);
+    const rm = Math.hypot(mx - ship.sx, my - ship.sy);
 
-    // Collision check
-    if (re < R_EARTH || rm < R_MOON) {
-      phase = 'CRASHED'; crashTimer = CRASH_DELAY; shipMesh.visible = false;
-      return;
+    if (re < R_EARTH || rm < R_MOON || re > 800) {
+      ship.crashed = true;
+      ship.crashTimer = 1.5;
+      ship.mesh.visible = false;
     }
+  }
 
-    // ── Phase transitions ──────────────────────────────────────────────────
-
-    if (phase === 'TO_MOON' && rm < MOON_SOI) {
-      // Capture burn: circularize into Moon orbit (counterclockwise)
-      const mvx = -Math.sin(moonAngle) * MOON_ORBIT_R * MOON_OMEGA;
-      const mvy =  Math.cos(moonAngle) * MOON_ORBIT_R * MOON_OMEGA;
-      // Tangential direction (CCW around Moon)
-      const tx = -dym / rm, ty = dxm / rm;
-      // Wait — dxm = mx - sx, so ship→Moon direction is (dxm, dym).
-      // Relative ship pos from Moon: (-dxm, -dym). CCW tangent: (dym, -dxm) / rm
-      const ccwTx = dym / rm, ccwTy = -dxm / rm;
-      const vc = Math.sqrt(G * M_MOON / rm);
-      svx = mvx + ccwTx * vc;
-      svy = mvy + ccwTy * vc;
-      phase = 'MOON_ORBIT';
-      orbitTimer = 0; phaseTimer = 0;
-      shipOrbitRing.visible = true;
-      return;
+  function updateShipMesh(ship: Ship) {
+    if (ship.mesh.visible) {
+      ship.mesh.position.set(ship.sx, ship.sy, 0);
+      ship.mesh.rotation.z = Math.atan2(ship.svy, ship.svx) - Math.PI / 4;
     }
+  }
 
-    if (phase === 'MOON_ORBIT') {
-      orbitTimer += dt;
-      if (orbitTimer >= ORBIT_DURATION) {
-        // Return burn: retrograde relative to Moon → escape toward Earth.
-        // Decelerating in Moon-frame reduces total energy enough to fall back.
-        const mvx = -Math.sin(moonAngle) * MOON_ORBIT_R * MOON_OMEGA;
-        const mvy =  Math.cos(moonAngle) * MOON_ORBIT_R * MOON_OMEGA;
-        const rvx = svx - mvx, rvy = svy - mvy;
-        const rs  = Math.hypot(rvx, rvy);
-        const ve  = Math.sqrt(2 * G * M_MOON / rm) * 1.05; // slightly above escape
-        const factor = ve / rs;
-        // Flip relative velocity (retrograde) → escapes Moon toward Earth
-        svx = mvx - rvx * factor;
-        svy = mvy - rvy * factor;
-        phase = 'TO_EARTH';
-        phaseTimer = 0;
-        shipOrbitRing.visible = false;
+  // ── Slingshot input ────────────────────────────────────────────────────────
+
+  // Convert canvas mouse coords to scene coords (Y is flipped)
+  function toScene(cx: number, cy: number) {
+    return { x: cx - W / 2, y: H / 2 - cy };
+  }
+
+  let dragging = false;
+  let dragA = { x: 0, y: 0 }; // scene-space start (ship spawn point)
+  let dragB = { x: 0, y: 0 }; // scene-space current mouse
+
+  // Slingshot line: from drag start to current mouse
+  const slingshotBuf = new Float32Array(6);
+  const slingshotGeo = new THREE.BufferGeometry();
+  slingshotGeo.setAttribute(
+    "position",
+    new THREE.BufferAttribute(slingshotBuf, 3),
+  );
+  const slingshotLine = new THREE.Line(
+    slingshotGeo,
+    new THREE.LineDashedMaterial({
+      color: 0xffffff,
+      dashSize: 6,
+      gapSize: 4,
+      opacity: 0.6,
+      transparent: true,
+    }),
+  );
+  slingshotLine.visible = false;
+  scene.add(slingshotLine);
+
+  // Small crosshair at drag origin
+  const markerGeo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(-6, 0, 0),
+    new THREE.Vector3(6, 0, 0),
+    new THREE.Vector3(0, -6, 0),
+    new THREE.Vector3(0, 6, 0),
+  ]);
+  const dragMarker = new THREE.LineSegments(
+    markerGeo,
+    new THREE.LineBasicMaterial({
+      color: 0xffffff,
+      opacity: 0.6,
+      transparent: true,
+    }),
+  );
+  dragMarker.visible = false;
+  scene.add(dragMarker);
+
+  function onDown(cx: number, cy: number) {
+    dragging = true;
+    dragA = toScene(cx, cy);
+    dragB = { ...dragA };
+    dragMarker.position.set(dragA.x, dragA.y, 0);
+    dragMarker.visible = true;
+  }
+  function onMove(cx: number, cy: number) {
+    if (!dragging) return;
+    dragB = toScene(cx, cy);
+    // Update slingshot line: from A to B
+    slingshotBuf[0] = dragA.x;
+    slingshotBuf[1] = dragA.y;
+    slingshotBuf[2] = 0;
+    slingshotBuf[3] = dragB.x;
+    slingshotBuf[4] = dragB.y;
+    slingshotBuf[5] = 0;
+    slingshotGeo.attributes.position.needsUpdate = true;
+    slingshotLine.computeLineDistances();
+    slingshotLine.visible = true;
+  }
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    slingshotLine.visible = false;
+    dragMarker.visible = false;
+    // Velocity is opposite of drag vector (slingshot: pull back → launch forward)
+    const vx = (dragA.x - dragB.x) * SLING_SCALE;
+    const vy = (dragA.y - dragB.y) * SLING_SCALE;
+    spawnShip(dragA.x, dragA.y, vx, vy, false);
+  }
+
+  canvas.addEventListener("mousedown", (e) => onDown(e.clientX, e.clientY));
+  canvas.addEventListener("mousemove", (e) => onMove(e.clientX, e.clientY));
+  canvas.addEventListener("mouseup", () => onUp());
+  canvas.addEventListener("mouseleave", () => onUp());
+
+  canvas.addEventListener(
+    "touchstart",
+    (e) => {
+      e.preventDefault();
+      onDown(e.touches[0].clientX, e.touches[0].clientY);
+    },
+    { passive: false },
+  );
+  canvas.addEventListener(
+    "touchmove",
+    (e) => {
+      e.preventDefault();
+      onMove(e.touches[0].clientX, e.touches[0].clientY);
+    },
+    { passive: false },
+  );
+  canvas.addEventListener(
+    "touchend",
+    (e) => {
+      e.preventDefault();
+      onUp();
+    },
+    { passive: false },
+  );
+
+  // Crash one ship at a time, oldest first (FIFO)
+  function crashOne() {
+    for (const ship of ships) {
+      if (!ship.crashed) {
+        ship.crashed = true;
+        ship.crashTimer = 1.5;
+        ship.mesh.visible = false;
+        return;
       }
     }
-    // TO_EARTH: free-fall under gravity until Earth collision triggers restart
   }
 
-  // ── Render ─────────────────────────────────────────────────────────────────
-
-  function updateScene() {
-    moonMesh.position.set(mx, my, 0);
-    shipOrbitRing.position.set(mx, my, 0);
-    if (shipMesh.visible) {
-      shipMesh.position.set(sx, sy, 0);
-      // Rotate square so a corner faces the direction of travel
-      shipMesh.rotation.z = Math.atan2(svy, svx) - Math.PI / 4;
+  // Burn: thrust in current direction on the last spawned active ship
+  function burn() {
+    for (let i = ships.length - 1; i >= 0; i--) {
+      const ship = ships[i];
+      if (!ship.crashed) {
+        const speed = Math.hypot(ship.svx, ship.svy);
+        if (speed === 0) return;
+        const BURN = 50;
+        ship.svx += (ship.svx / speed) * BURN;
+        ship.svy += (ship.svy / speed) * BURN;
+        spawnBurnParticle(ship.sx, ship.sy);
+        return;
+      }
     }
   }
+
+  const impulseRange = document.getElementById('impulse-range') as HTMLInputElement;
+  const impulseLabel = document.getElementById('impulse-label')!;
+  impulseRange.addEventListener('input', () => {
+    launchImpulse = parseFloat(impulseRange.value);
+    impulseLabel.textContent = `impulse: ${launchImpulse.toFixed(2)}`;
+  });
+
+  const angleRange = document.getElementById('angle-range') as HTMLInputElement;
+  const angleLabel = document.getElementById('angle-label')!;
+  angleRange.addEventListener('input', () => {
+    launchAngleOffset = parseFloat(angleRange.value);
+    angleLabel.textContent = `angle offset: ${launchAngleOffset.toFixed(2)} rad`;
+  });
+
+  document.getElementById('launch-btn')!.addEventListener('click', autoLaunch);
+  document.getElementById('burn-btn')!.addEventListener('click', burn);
+  document.getElementById('crash-btn')!.addEventListener('click', crashOne);
+  window.addEventListener('keydown', e => {
+    if (e.key === 'l' || e.key === 'L') autoLaunch();
+    if (e.key === 'b' || e.key === 'B') burn();
+    if (e.key === 'c' || e.key === 'C') crashOne();
+  });
+
+  // ── Animation loop ─────────────────────────────────────────────────────────
 
   let t0 = 0;
   function animate(t: number) {
     const dt = Math.min((t - t0) / 1000, 0.05);
     t0 = t;
-    step(dt);
-    updateScene();
+
+    moonAngle += MOON_OMEGA * dt;
+    mx = Math.cos(moonAngle) * MOON_ORBIT_R;
+    my = Math.sin(moonAngle) * MOON_ORBIT_R;
+    moonMesh.position.set(mx, my, 0);
+
+    for (let i = ships.length - 1; i >= 0; i--) {
+      stepShip(ships[i], dt);
+      if (ships[i]) updateShipMesh(ships[i]);
+    }
+    updateParticles(dt);
+
     renderer.render(scene, camera);
     requestAnimationFrame(animate);
   }
