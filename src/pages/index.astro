@@ -11,12 +11,22 @@ const experiments: ExperimentEntry[] = Object.entries(metaModules)
   .map(([path, mod]) => ({
     slug: path.split('/').at(-2)!,
     ...mod.default,
-  }));
+  }))
+  .sort((a, b) => b.date.localeCompare(a.date));
 
 const allTags = [...new Set(experiments.flatMap(e => e.tags))].sort();
 ---
 
 <BaseLayout>
+  <header id="mobile-header">
+    <a href="/" class="mobile-title">experiments</a>
+    <button id="hamburger" aria-label="Open menu">
+      <span></span><span></span><span></span>
+    </button>
+  </header>
+
+  <div id="backdrop"></div>
+
   <div id="layout">
     <Sidebar tags={allTags} />
 
@@ -31,6 +41,63 @@ const allTags = [...new Set(experiments.flatMap(e => e.tags))].sort();
 </BaseLayout>
 
 <style>
+  #mobile-header {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 48px;
+    background: #141414;
+    border-bottom: 1px solid #222;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    z-index: 100;
+  }
+
+  .mobile-title {
+    color: #fff;
+    text-decoration: none;
+    font-size: 12px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+
+  #hamburger {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 4px;
+  }
+
+  #hamburger span {
+    display: block;
+    width: 18px;
+    height: 1.5px;
+    background: #888;
+    transition: background 0.15s;
+  }
+
+  #hamburger:hover span {
+    background: #fff;
+  }
+
+  #backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 150;
+  }
+
+  #backdrop.open {
+    display: block;
+  }
+
   #layout {
     display: flex;
     height: 100vh;
@@ -46,13 +113,56 @@ const allTags = [...new Set(experiments.flatMap(e => e.tags))].sort();
 
   #grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 2px;
     padding: 2px;
+  }
+
+  @media (max-width: 767px) {
+    #mobile-header {
+      display: flex;
+    }
+
+    #main {
+      margin-left: 0;
+      padding-top: 48px;
+      height: 100vh;
+    }
+
+    #grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  @media (max-width: 400px) {
+    #grid {
+      grid-template-columns: 1fr;
+    }
   }
 </style>
 
 <script>
+  // Mobile sidebar toggle
+  const sidebar = document.getElementById('sidebar')!;
+  const backdrop = document.getElementById('backdrop')!;
+  const hamburger = document.getElementById('hamburger')!;
+  const closeBtn = document.getElementById('sidebar-close')!;
+
+  function openSidebar() {
+    sidebar.classList.add('open');
+    backdrop.classList.add('open');
+  }
+
+  function closeSidebar() {
+    sidebar.classList.remove('open');
+    backdrop.classList.remove('open');
+  }
+
+  hamburger.addEventListener('click', openSidebar);
+  closeBtn.addEventListener('click', closeSidebar);
+  backdrop.addEventListener('click', closeSidebar);
+
+  // Tag filtering
   const tagButtons = document.querySelectorAll<HTMLButtonElement>('.tag-filter');
   const cards = document.querySelectorAll<HTMLElement>('.experiment-card');
 

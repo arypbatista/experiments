@@ -9,10 +9,11 @@ const githubUrl = import.meta.env.GITHUB_URL;
 const linkedinUrl = import.meta.env.LINKEDIN_URL;
 ---
 
-<aside id="sidebar">
+<aside id="sidebar" aria-label="Site navigation">
   <!-- Title -->
   <div class="sidebar-header">
     <a href="/" class="site-title">experiments</a>
+    <button id="sidebar-close" aria-label="Close menu">✕</button>
   </div>
 
   <div class="sidebar-body">
@@ -86,11 +87,47 @@ const linkedinUrl = import.meta.env.LINKEDIN_URL;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
+    z-index: 200;
+    transition: transform 0.25s ease;
+  }
+
+  @media (max-width: 767px) {
+    aside {
+      transform: translateX(-100%);
+    }
+
+    aside.open {
+      transform: translateX(0);
+    }
   }
 
   .sidebar-header {
     padding: 24px 20px 20px;
     border-bottom: 1px solid #1e1e1e;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  #sidebar-close {
+    display: none;
+    background: none;
+    border: none;
+    color: #666;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 4px;
+    line-height: 1;
+  }
+
+  #sidebar-close:hover {
+    color: #fff;
+  }
+
+  @media (max-width: 767px) {
+    #sidebar-close {
+      display: block;
+    }
   }
 
   .site-title {
