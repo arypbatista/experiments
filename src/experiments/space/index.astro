@@ -1,0 +1,254 @@
+---
+// No layout — ExperimentLayout applied by [slug].astro
+---
+
+<canvas id="canvas" style="display:block;width:100%;height:100%;"></canvas>
+
+<script>
+  import * as THREE from 'three';
+
+  // ── Renderer & camera ──────────────────────────────────────────────────────
+  const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+  let W = window.innerWidth, H = window.innerHeight;
+
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setSize(W, H);
+  renderer.setClearColor(0x000000, 1);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-W / 2, W / 2, H / 2, -H / 2, 0.1, 10);
+  camera.position.z = 1;
+
+  window.addEventListener('resize', () => {
+    W = window.innerWidth; H = window.innerHeight;
+    renderer.setSize(W, H);
+    camera.left = -W / 2; camera.right = W / 2;
+    camera.top = H / 2; camera.bottom = -H / 2;
+    camera.updateProjectionMatrix();
+  });
+
+  // ── Geometry helpers ───────────────────────────────────────────────────────
+
+  function makeCircleLine(r: number, segs = 64): THREE.Line {
+    const pts: THREE.Vector3[] = [];
+    for (let i = 0; i <= segs; i++) {
+      const a = (i / segs) * Math.PI * 2;
+      pts.push(new THREE.Vector3(Math.cos(a) * r, Math.sin(a) * r, 0));
+    }
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    const mat = new THREE.LineBasicMaterial({ color: 0xffffff });
+    return new THREE.Line(geo, mat);
+  }
+
+  function makeDashedCircle(r: number, segs = 128): THREE.Line {
+    const pts: THREE.Vector3[] = [];
+    for (let i = 0; i <= segs; i++) {
+      const a = (i / segs) * Math.PI * 2;
+      pts.push(new THREE.Vector3(Math.cos(a) * r, Math.sin(a) * r, 0));
+    }
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    const mat = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 12, gapSize: 7 });
+    const line = new THREE.Line(geo, mat);
+    line.computeLineDistances();
+    return line;
+  }
+
+  function makeShipSquare(s: number): THREE.Line {
+    const pts = [
+      new THREE.Vector3(-s, -s, 0), new THREE.Vector3(s, -s, 0),
+      new THREE.Vector3(s,  s, 0), new THREE.Vector3(-s,  s, 0),
+      new THREE.Vector3(-s, -s, 0),
+    ];
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    const mat = new THREE.LineBasicMaterial({ color: 0xffffff });
+    return new THREE.Line(geo, mat);
+  }
+
+  // ── Physics constants ──────────────────────────────────────────────────────
+  // Custom Newtonian gravity — no physics lib needed for orbital mechanics.
+  // G and masses are tuned so the Moon has a ~20 s period at MOON_ORBIT_R.
+
+  const G       = 1;
+  const M_EARTH = 1_500_000;
+  const M_MOON  = 120_000;
+
+  const R_EARTH      = 25;   // visual + collision radius (px)
+  const R_MOON       = 12;   // visual + collision radius (px)
+  const MOON_ORBIT_R = 250;  // Moon's orbital radius from Earth (px)
+
+  // Derived
+  const MOON_OMEGA = Math.sqrt(G * M_EARTH / MOON_ORBIT_R ** 3); // ~0.31 rad/s → ~20 s period
+  const A_XFER     = (R_EARTH + MOON_ORBIT_R) / 2;               // Hohmann semi-major axis
+  const T_XFER_HALF = Math.PI * Math.sqrt(A_XFER ** 3 / (G * M_EARTH)); // ~4.1 s
+  const MOON_SOI   = MOON_ORBIT_R * (M_MOON / M_EARTH) ** 0.4;  // ~57 px
+  const V_LAUNCH   = Math.sqrt(G * M_EARTH * (2 / R_EARTH - 1 / A_XFER)); // ~330 px/s
+
+  // Moon starts so it arrives near apoapsis when the ship completes the transfer.
+  // +0.15 rad offset prevents the ship from arriving dead-center on the Moon.
+  const MOON_START_ANGLE = Math.PI - MOON_OMEGA * T_XFER_HALF + 0.15;
+
+  const SHIP_MOON_ORBIT_R = 40; // visual orbit ring radius around Moon (px)
+
+  // ── Scene objects ──────────────────────────────────────────────────────────
+
+  const earthMesh     = makeCircleLine(R_EARTH);
+  scene.add(earthMesh);
+
+  const moonOrbitRing = makeDashedCircle(MOON_ORBIT_R); // Moon's orbital path (centered at Earth)
+  scene.add(moonOrbitRing);
+
+  const moonMesh      = makeCircleLine(R_MOON);
+  scene.add(moonMesh);
+
+  const shipOrbitRing = makeDashedCircle(SHIP_MOON_ORBIT_R); // ship's orbit around Moon
+  shipOrbitRing.visible = false;
+  scene.add(shipOrbitRing);
+
+  const shipMesh = makeShipSquare(5);
+  scene.add(shipMesh);
+
+  // ── Simulation state ───────────────────────────────────────────────────────
+
+  type Phase = 'TO_MOON' | 'MOON_ORBIT' | 'TO_EARTH' | 'CRASHED';
+
+  let moonAngle = MOON_START_ANGLE;
+  let mx = Math.cos(moonAngle) * MOON_ORBIT_R;
+  let my = Math.sin(moonAngle) * MOON_ORBIT_R;
+
+  let sx = R_EARTH, sy = 0;    // ship position
+  let svx = 0, svy = V_LAUNCH; // ship velocity (tangential launch → counterclockwise)
+  let phase: Phase = 'TO_MOON';
+
+  let orbitTimer = 0;  // time spent orbiting Moon
+  let phaseTimer = 0;  // safety timeout per phase
+  let crashTimer = 0;
+
+  const ORBIT_DURATION  = 10;   // seconds orbiting Moon before returning
+  const PHASE_TIMEOUT   = 50;   // force-restart if stuck
+  const CRASH_DELAY     = 1.5;  // pause before restart after crash
+
+  function reset() {
+    moonAngle = MOON_START_ANGLE;
+    mx = Math.cos(moonAngle) * MOON_ORBIT_R;
+    my = Math.sin(moonAngle) * MOON_ORBIT_R;
+    sx = R_EARTH; sy = 0; svx = 0; svy = V_LAUNCH;
+    phase = 'TO_MOON';
+    orbitTimer = 0; phaseTimer = 0;
+    shipOrbitRing.visible = false;
+    shipMesh.visible = true;
+  }
+
+  // ── Physics step ──────────────────────────────────────────────────────────
+
+  function step(dt: number) {
+    // Moon moves kinematically (stable circular orbit)
+    moonAngle += MOON_OMEGA * dt;
+    mx = Math.cos(moonAngle) * MOON_ORBIT_R;
+    my = Math.sin(moonAngle) * MOON_ORBIT_R;
+
+    if (phase === 'CRASHED') {
+      crashTimer -= dt;
+      if (crashTimer <= 0) reset();
+      return;
+    }
+
+    phaseTimer += dt;
+    if (phaseTimer > PHASE_TIMEOUT) {
+      phase = 'CRASHED'; crashTimer = CRASH_DELAY; shipMesh.visible = false;
+      return;
+    }
+
+    // Integrate gravity with sub-steps (Euler, 8 sub-steps per frame)
+    const SUB = 8, sdt = dt / SUB;
+    for (let i = 0; i < SUB; i++) {
+      const re  = Math.hypot(sx, sy);
+      const ae  = G * M_EARTH / (re * re);
+      const axe = (-sx / re) * ae,  aye = (-sy / re) * ae;
+
+      const dxm = mx - sx, dym = my - sy;
+      const rm  = Math.hypot(dxm, dym);
+      const am  = G * M_MOON / (rm * rm);
+      const axm = (dxm / rm) * am, aym = (dym / rm) * am;
+
+      svx += (axe + axm) * sdt;
+      svy += (aye + aym) * sdt;
+      sx  += svx * sdt;
+      sy  += svy * sdt;
+    }
+
+    const re  = Math.hypot(sx, sy);
+    const dxm = mx - sx, dym = my - sy;
+    const rm  = Math.hypot(dxm, dym);
+
+    // Collision check
+    if (re < R_EARTH || rm < R_MOON) {
+      phase = 'CRASHED'; crashTimer = CRASH_DELAY; shipMesh.visible = false;
+      return;
+    }
+
+    // ── Phase transitions ──────────────────────────────────────────────────
+
+    if (phase === 'TO_MOON' && rm < MOON_SOI) {
+      // Capture burn: circularize into Moon orbit (counterclockwise)
+      const mvx = -Math.sin(moonAngle) * MOON_ORBIT_R * MOON_OMEGA;
+      const mvy =  Math.cos(moonAngle) * MOON_ORBIT_R * MOON_OMEGA;
+      // Tangential direction (CCW around Moon)
+      const tx = -dym / rm, ty = dxm / rm;
+      // Wait — dxm = mx - sx, so ship→Moon direction is (dxm, dym).
+      // Relative ship pos from Moon: (-dxm, -dym). CCW tangent: (dym, -dxm) / rm
+      const ccwTx = dym / rm, ccwTy = -dxm / rm;
+      const vc = Math.sqrt(G * M_MOON / rm);
+      svx = mvx + ccwTx * vc;
+      svy = mvy + ccwTy * vc;
+      phase = 'MOON_ORBIT';
+      orbitTimer = 0; phaseTimer = 0;
+      shipOrbitRing.visible = true;
+      return;
+    }
+
+    if (phase === 'MOON_ORBIT') {
+      orbitTimer += dt;
+      if (orbitTimer >= ORBIT_DURATION) {
+        // Return burn: retrograde relative to Moon → escape toward Earth.
+        // Decelerating in Moon-frame reduces total energy enough to fall back.
+        const mvx = -Math.sin(moonAngle) * MOON_ORBIT_R * MOON_OMEGA;
+        const mvy =  Math.cos(moonAngle) * MOON_ORBIT_R * MOON_OMEGA;
+        const rvx = svx - mvx, rvy = svy - mvy;
+        const rs  = Math.hypot(rvx, rvy);
+        const ve  = Math.sqrt(2 * G * M_MOON / rm) * 1.05; // slightly above escape
+        const factor = ve / rs;
+        // Flip relative velocity (retrograde) → escapes Moon toward Earth
+        svx = mvx - rvx * factor;
+        svy = mvy - rvy * factor;
+        phase = 'TO_EARTH';
+        phaseTimer = 0;
+        shipOrbitRing.visible = false;
+      }
+    }
+    // TO_EARTH: free-fall under gravity until Earth collision triggers restart
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
+  function updateScene() {
+    moonMesh.position.set(mx, my, 0);
+    shipOrbitRing.position.set(mx, my, 0);
+    if (shipMesh.visible) {
+      shipMesh.position.set(sx, sy, 0);
+      // Rotate square so a corner faces the direction of travel
+      shipMesh.rotation.z = Math.atan2(svy, svx) - Math.PI / 4;
+    }
+  }
+
+  let t0 = 0;
+  function animate(t: number) {
+    const dt = Math.min((t - t0) / 1000, 0.05);
+    t0 = t;
+    step(dt);
+    updateScene();
+    renderer.render(scene, camera);
+    requestAnimationFrame(animate);
+  }
+
+  requestAnimationFrame(animate);
+</script>
