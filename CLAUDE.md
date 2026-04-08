@@ -183,6 +183,36 @@ function draw(t) {
 
 Use `window.matchMedia('(pointer: coarse)').matches` to detect touch devices — not `navigator.userAgent`. For zoom, detect portrait orientation with `window.innerHeight > window.innerWidth` and adjust the camera accordingly.
 
+### In-experiment UI controls (overlays)
+
+When an experiment needs in-canvas controls (sliders, selects, buttons), overlay them with `position:absolute` inside the canvas wrapper. Conventions:
+
+- **Top-right panel** (settings/presets): `top: 64px; right: 16px` — clears the back button and title overlay at the top.
+- **Bottom-right panel** (action buttons): `bottom: 24px; right: 24px`.
+- Style: monospace font, `background: rgba(0,0,0,0.55)`, `border: 1px solid rgba(255,255,255,0.15)`, white text, small padding.
+- On mobile, these panels may overlap scene content — either hide non-essential controls or reduce their size.
+
+### Three.js 2D scene (OrthographicCamera)
+
+For 2D canvas experiments using Three.js, set up an OrthographicCamera where scene units equal pixels and the origin is at the center of the screen:
+
+```ts
+const W = window.innerWidth, H = window.innerHeight;
+const camera = new THREE.OrthographicCamera(-W/2, W/2, H/2, -H/2, 0.1, 1000);
+camera.position.z = 10;
+
+function onResize() {
+  const W = window.innerWidth, H = window.innerHeight;
+  renderer.setSize(W, H);
+  camera.left = -W/2; camera.right = W/2;
+  camera.top = H/2; camera.bottom = -H/2;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', onResize);
+```
+
+To zoom out on mobile without changing the scene, set `camera.zoom = 0.5` and call `camera.updateProjectionMatrix()`. To shift the viewport (e.g. make room for a top UI panel), set `camera.position.y`.
+
 ## Dev
 
 ```bash
