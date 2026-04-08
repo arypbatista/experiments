@@ -4,21 +4,80 @@
 
 <canvas id="canvas" style="display:block;width:100%;height:100%;"></canvas>
 <div style="position:fixed;bottom:24px;right:24px;display:flex;gap:8px;">
-  <button id="launch-btn" style="background:transparent;border:1px solid rgba(255,255,255,0.4);color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;">LAUNCH [L]</button>
-  <button id="burn-btn" style="background:transparent;border:1px solid rgba(255,255,0,0.5);color:rgba(255,255,0,0.8);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;">BURN [B]</button>
-  <button id="crash-btn" style="background:transparent;border:1px solid rgba(255,255,255,0.4);color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;">CRASH [C]</button>
+  <button
+    id="launch-btn"
+    style="background:transparent;border:1px solid rgba(255,255,255,0.4);color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+    >LAUNCH [L]</button
+  >
+  <button
+    id="burn-btn"
+    style="background:transparent;border:1px solid rgba(255,255,0,0.5);color:rgba(255,255,0,0.8);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+    >BURN [B]</button
+  >
+  <button
+    id="crash-btn"
+    style="background:transparent;border:1px solid rgba(255,255,255,0.4);color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+    >CRASH [C]</button
+  >
 </div>
 
-<div id="launch-controls" style="position:fixed;top:24px;right:24px;font-family:monospace;font-size:11px;color:rgba(255,255,255,0.7);display:flex;flex-direction:column;gap:8px;min-width:200px;">
+<div
+  id="launch-controls"
+  style="position:fixed;top:64px;right:24px;font-family:monospace;font-size:11px;color:rgba(255,255,255,0.7);display:flex;flex-direction:column;gap:8px;min-width:200px;"
+>
+  <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:2px;">
+    <span
+      style="font-size:12px;color:rgba(255,255,255,0.9);letter-spacing:0.06em;"
+      >AUTO-LAUNCH</span
+    >
+    <span style="font-size:10px;color:rgba(255,255,255,0.4);line-height:1.4;"
+      >parameters used each time<br />the ship relaunches automatically</span
+    >
+  </div>
+  <select
+    id="preset-select"
+    style="background:#000;border:1px solid rgba(255,255,255,0.3);color:rgba(255,255,255,0.8);font-family:monospace;font-size:11px;padding:4px 6px;cursor:pointer;width:100%;"
+  >
+    <option value="low-orbit">Earth low orbit</option>
+    <option value="high-orbit">Earth high orbit</option>
+    <option value="moon-orbit" selected>Moon orbit</option>
+    <option value="custom">Custom</option>
+  </select>
   <label style="display:flex;flex-direction:column;gap:3px;">
     <span id="impulse-label">impulse: 1.05</span>
-    <input id="impulse-range" type="range" min="0.8" max="1.5" step="0.01" value="1.05"
-      style="accent-color:white;width:100%;" />
+    <input
+      id="impulse-range"
+      type="range"
+      min="0.8"
+      max="1.5"
+      step="0.01"
+      value="1.05"
+      style="accent-color:white;width:100%;"
+    />
   </label>
-  <label style="display:flex;flex-direction:column;gap:3px;">
-    <span id="angle-label">angle offset: 0.12 rad</span>
-    <input id="angle-range" type="range" min="-0.5" max="0.5" step="0.01" value="0.12"
-      style="accent-color:white;width:100%;" />
+  <label id="moon-angle-row" style="display:flex;flex-direction:column;gap:3px;">
+    <span id="angle-label">moon angle offset: 0.12 rad</span>
+    <input
+      id="angle-range"
+      type="range"
+      min="-0.5"
+      max="0.5"
+      step="0.01"
+      value="0.12"
+      style="accent-color:white;width:100%;"
+    />
+  </label>
+  <label id="launch-angle-row" style="display:none;flex-direction:column;gap:3px;">
+    <span id="launch-angle-label">launch angle: 0°</span>
+    <input
+      id="launch-angle-range"
+      type="range"
+      min="0"
+      max="360"
+      step="1"
+      value="0"
+      style="accent-color:white;width:100%;"
+    />
   </label>
 </div>
 
@@ -88,16 +147,46 @@
     return line;
   }
 
-  function makeShipSquare(): THREE.Line {
-    const s = 5;
-    return new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(-s, -s, 0),
-        new THREE.Vector3(s, -s, 0),
-        new THREE.Vector3(s, s, 0),
-        new THREE.Vector3(-s, s, 0),
-        new THREE.Vector3(-s, -s, 0),
-      ]),
+  function makeShipSquare(): THREE.LineSegments {
+    // Geometry pre-rotated -45° so heading=0 means facing right with a flat edge forward.
+    // Forward corner is at (+r, 0); tail extends backward along -x axis.
+    const r = 5 * Math.SQRT2; // circumradius: keeps same visual size as the original ±5 square
+    const pts = new Float32Array([
+      r,
+      0,
+      0,
+      0,
+      -r,
+      0, // right–bottom edge
+      0,
+      -r,
+      0,
+      -r,
+      0,
+      0, // bottom–left edge
+      -r,
+      0,
+      0,
+      0,
+      r,
+      0, // left–top edge
+      0,
+      r,
+      0,
+      r,
+      0,
+      0, // top–right edge
+      0,
+      0,
+      0,
+      -r * 1.6,
+      0,
+      0, // tail: center → backward (-x)
+    ]);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(pts, 3));
+    return new THREE.LineSegments(
+      geo,
       new THREE.LineBasicMaterial({ color: 0xffffff }),
     );
   }
@@ -120,8 +209,9 @@
   const SLING_SCALE = 3.3; // px drag → px/s velocity
 
   // ── Tunable auto-launch parameters ────────────────────────────────────────
-  let launchImpulse = 1.05;  // multiplier on V_LAUNCH_BASE
-  let launchAngleOffset = 0.12; // rad ahead of predicted Moon position
+  let launchImpulse = 1.05;      // multiplier on V_LAUNCH_BASE
+  let launchAngleOffset = 0.12;  // rad ahead of predicted Moon position (moon-orbit only)
+  let launchAngleDeg = 0;        // fixed launch angle in degrees (non-moon presets)
 
   // ── Static scene objects ───────────────────────────────────────────────────
 
@@ -138,6 +228,7 @@
     sy: number;
     svx: number;
     svy: number;
+    heading: number; // facing angle (rad) — independent of velocity
     crashed: boolean;
     crashTimer: number;
     auto: boolean; // auto-ship restarts; user ships are removed
@@ -160,6 +251,7 @@
       sy,
       svx,
       svy,
+      heading: Math.atan2(svy, svx),
       crashed: false,
       crashTimer: 0,
       auto,
@@ -185,11 +277,17 @@
   function spawnBurnParticle(x: number, y: number) {
     const s = 3;
     const geo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(-s, -s, 0), new THREE.Vector3(s, -s, 0),
-      new THREE.Vector3(s,  s, 0),  new THREE.Vector3(-s,  s, 0),
+      new THREE.Vector3(-s, -s, 0),
+      new THREE.Vector3(s, -s, 0),
+      new THREE.Vector3(s, s, 0),
+      new THREE.Vector3(-s, s, 0),
       new THREE.Vector3(-s, -s, 0),
     ]);
-    const mat = new THREE.LineBasicMaterial({ color: 0xffff00, transparent: true, opacity: 1 });
+    const mat = new THREE.LineBasicMaterial({
+      color: 0xffff00,
+      transparent: true,
+      opacity: 1,
+    });
     const mesh = new THREE.Line(geo, mat);
     mesh.position.set(x, y, 0);
     scene.add(mesh);
@@ -223,15 +321,21 @@
 
   // ── Physics step ──────────────────────────────────────────────────────────
 
+  function computeLaunchAngle(): number {
+    if (presetSelect.value === 'moon-orbit') {
+      return moonAngle + MOON_OMEGA * T_XFER_HALF + launchAngleOffset + Math.PI;
+    }
+    return launchAngleDeg * (Math.PI / 180);
+  }
+
   function autoLaunch() {
-    const futureMoonAngle = moonAngle + MOON_OMEGA * T_XFER_HALF + launchAngleOffset;
-    const launchAngle = futureMoonAngle + Math.PI;
+    const la = computeLaunchAngle();
     const vl = V_LAUNCH_BASE * launchImpulse;
     spawnShip(
-      Math.cos(launchAngle) * R_EARTH,
-      Math.sin(launchAngle) * R_EARTH,
-      -Math.sin(launchAngle) * vl,
-       Math.cos(launchAngle) * vl,
+      Math.cos(la) * R_EARTH,
+      Math.sin(la) * R_EARTH,
+      -Math.sin(la) * vl,
+       Math.cos(la) * vl,
     );
   }
 
@@ -241,17 +345,17 @@
       if (ship.crashTimer <= 0) {
         if (ship.auto) {
           // Wait until every other ship is gone before relaunching
-          if (ships.some(s => s !== ship && !s.crashed)) {
+          if (ships.some((s) => s !== ship && !s.crashed)) {
             ship.crashTimer = 0.5;
             return;
           }
-          const futureMoonAngle = moonAngle + MOON_OMEGA * T_XFER_HALF + launchAngleOffset;
-          const launchAngle = futureMoonAngle + Math.PI;
-          ship.sx = Math.cos(launchAngle) * R_EARTH;
-          ship.sy = Math.sin(launchAngle) * R_EARTH;
+          const la = computeLaunchAngle();
+          ship.sx = Math.cos(la) * R_EARTH;
+          ship.sy = Math.sin(la) * R_EARTH;
           const vl = V_LAUNCH_BASE * launchImpulse;
-          ship.svx = -Math.sin(launchAngle) * vl;
-          ship.svy = Math.cos(launchAngle) * vl;
+          ship.svx = -Math.sin(la) * vl;
+          ship.svy =  Math.cos(la) * vl;
+          ship.heading = Math.atan2(ship.svy, ship.svx);
           ship.crashed = false;
           ship.mesh.visible = true;
         } else {
@@ -286,7 +390,8 @@
     const re = Math.hypot(ship.sx, ship.sy);
     const rm = Math.hypot(mx - ship.sx, my - ship.sy);
 
-    if (re < R_EARTH || rm < R_MOON || re > 800) {
+    const offScreen = Math.abs(ship.sx) > W / 2 || Math.abs(ship.sy) > H / 2;
+    if (re < R_EARTH || rm < R_MOON || offScreen) {
       ship.crashed = true;
       ship.crashTimer = 1.5;
       ship.mesh.visible = false;
@@ -296,7 +401,7 @@
   function updateShipMesh(ship: Ship) {
     if (ship.mesh.visible) {
       ship.mesh.position.set(ship.sx, ship.sy, 0);
-      ship.mesh.rotation.z = Math.atan2(ship.svy, ship.svx) - Math.PI / 4;
+      ship.mesh.rotation.z = ship.heading;
     }
   }
 
@@ -428,39 +533,106 @@
     for (let i = ships.length - 1; i >= 0; i--) {
       const ship = ships[i];
       if (!ship.crashed) {
-        const speed = Math.hypot(ship.svx, ship.svy);
-        if (speed === 0) return;
         const BURN = 50;
-        ship.svx += (ship.svx / speed) * BURN;
-        ship.svy += (ship.svy / speed) * BURN;
-        spawnBurnParticle(ship.sx, ship.sy);
+        ship.svx += Math.cos(ship.heading) * BURN;
+        ship.svy += Math.sin(ship.heading) * BURN;
+        const tailDist = 5 * Math.SQRT2 * 1.6;
+        spawnBurnParticle(
+          ship.sx - Math.cos(ship.heading) * tailDist,
+          ship.sy - Math.sin(ship.heading) * tailDist,
+        );
         return;
       }
     }
   }
 
-  const impulseRange = document.getElementById('impulse-range') as HTMLInputElement;
-  const impulseLabel = document.getElementById('impulse-label')!;
+  const presetSelect      = document.getElementById('preset-select')      as HTMLSelectElement;
+  const impulseRange      = document.getElementById('impulse-range')      as HTMLInputElement;
+  const impulseLabel      = document.getElementById('impulse-label')!;
+  const angleRange        = document.getElementById('angle-range')        as HTMLInputElement;
+  const angleLabel        = document.getElementById('angle-label')!;
+  const moonAngleRow      = document.getElementById('moon-angle-row')!;
+  const launchAngleRow    = document.getElementById('launch-angle-row')!;
+  const launchAngleRange  = document.getElementById('launch-angle-range') as HTMLInputElement;
+  const launchAngleLabel  = document.getElementById('launch-angle-label')!;
+
+  // Presets: [impulse, moonAngleOffset, launchAngleDeg]
+  const PRESETS: Record<string, [number, number, number]> = {
+    'low-orbit':  [0.91,  0.0,  0],
+    'high-orbit': [0.97,  0.0,  0],
+    'moon-orbit': [1.05,  0.12, 0],
+  };
+
+  function updateAngleRowVisibility() {
+    const isMoon = presetSelect.value === 'moon-orbit';
+    moonAngleRow.style.display   = isMoon ? 'flex' : 'none';
+    launchAngleRow.style.display = isMoon ? 'none' : 'flex';
+  }
+
+  function applyValues(impulse: number, moonOffset: number, launchDeg: number) {
+    launchImpulse     = impulse;
+    launchAngleOffset = moonOffset;
+    launchAngleDeg    = launchDeg;
+    impulseRange.value     = impulse.toFixed(2);
+    angleRange.value       = moonOffset.toFixed(2);
+    launchAngleRange.value = String(launchDeg);
+    impulseLabel.textContent     = `impulse: ${impulse.toFixed(2)}`;
+    angleLabel.textContent       = `moon angle offset: ${moonOffset.toFixed(2)} rad`;
+    launchAngleLabel.textContent = `launch angle: ${launchDeg}°`;
+    updateAngleRowVisibility();
+  }
+
+  presetSelect.addEventListener('change', () => {
+    const preset = PRESETS[presetSelect.value];
+    if (preset) applyValues(preset[0], preset[1], preset[2]);
+    else updateAngleRowVisibility();
+  });
+
   impulseRange.addEventListener('input', () => {
     launchImpulse = parseFloat(impulseRange.value);
     impulseLabel.textContent = `impulse: ${launchImpulse.toFixed(2)}`;
+    presetSelect.value = 'custom';
   });
 
-  const angleRange = document.getElementById('angle-range') as HTMLInputElement;
-  const angleLabel = document.getElementById('angle-label')!;
   angleRange.addEventListener('input', () => {
     launchAngleOffset = parseFloat(angleRange.value);
-    angleLabel.textContent = `angle offset: ${launchAngleOffset.toFixed(2)} rad`;
+    angleLabel.textContent = `moon angle offset: ${launchAngleOffset.toFixed(2)} rad`;
+    presetSelect.value = 'custom';
   });
 
-  document.getElementById('launch-btn')!.addEventListener('click', autoLaunch);
-  document.getElementById('burn-btn')!.addEventListener('click', burn);
-  document.getElementById('crash-btn')!.addEventListener('click', crashOne);
-  window.addEventListener('keydown', e => {
-    if (e.key === 'l' || e.key === 'L') autoLaunch();
-    if (e.key === 'b' || e.key === 'B') burn();
-    if (e.key === 'c' || e.key === 'C') crashOne();
+  launchAngleRange.addEventListener('input', () => {
+    launchAngleDeg = parseInt(launchAngleRange.value);
+    launchAngleLabel.textContent = `launch angle: ${launchAngleDeg}°`;
+    presetSelect.value = 'custom';
   });
+
+  updateAngleRowVisibility();
+
+  document.getElementById("launch-btn")!.addEventListener("click", autoLaunch);
+  document.getElementById("burn-btn")!.addEventListener("click", burn);
+  document.getElementById("crash-btn")!.addEventListener("click", crashOne);
+  const keysHeld = new Set<string>();
+  window.addEventListener("keydown", (e) => {
+    keysHeld.add(e.key);
+    if (e.key === "l" || e.key === "L") autoLaunch();
+    if (e.key === "b" || e.key === "B") burn();
+    if (e.key === "c" || e.key === "C") crashOne();
+  });
+  window.addEventListener("keyup", (e) => keysHeld.delete(e.key));
+
+  const TURN_RATE = 2.5; // rad/s
+
+  function steerLastShip(dt: number) {
+    const left = keysHeld.has("a") || keysHeld.has("A");
+    const right = keysHeld.has("d") || keysHeld.has("D");
+    if (!left && !right) return;
+    for (let i = ships.length - 1; i >= 0; i--) {
+      const ship = ships[i];
+      if (ship.crashed) continue;
+      ship.heading += (left ? 1 : -1) * TURN_RATE * dt;
+      return;
+    }
+  }
 
   // ── Animation loop ─────────────────────────────────────────────────────────
 
@@ -474,6 +646,7 @@
     my = Math.sin(moonAngle) * MOON_ORBIT_R;
     moonMesh.position.set(mx, my, 0);
 
+    steerLastShip(dt);
     for (let i = ships.length - 1; i >= 0; i--) {
       stepShip(ships[i], dt);
       if (ships[i]) updateShipMesh(ships[i]);
