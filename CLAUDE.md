@@ -11,6 +11,8 @@ A personal creative coding gallery. Each experiment is an isolated, full-page ca
 ## Structure
 
 ```
+docs/
+└── how-it-works.md               # project structure and experiment conventions explained
 src/
 ├── experiments/
 │   ├── types.ts                  # ExperimentMeta + ExperimentEntry types
