@@ -3,46 +3,22 @@ import src from "./creation-of-adam.png";
 const { src: imageSrc, width: imageW, height: imageH } = src;
 ---
 
-<div id="root" style="position:relative;width:100vw;height:100vh;overflow:hidden;">
-  <canvas
-    id="canvas"
-    style="display:block;width:100%;height:100%;"
-    data-src={imageSrc}
-    data-w={imageW}
-    data-h={imageH}
-  ></canvas>
-
-  <p id="hint" style="
-    position:absolute;
-    bottom:20px;
-    left:50%;
-    transform:translateX(-50%);
-    color:rgba(255,255,255,0.25);
-    font-size:11px;
-    font-family:ui-monospace,monospace;
-    white-space:nowrap;
-    pointer-events:none;
-    transition:opacity 1s;
-  "></p>
-</div>
+<canvas
+  id="canvas"
+  style="display:block;width:100vw;height:100vh;"
+  data-src={imageSrc}
+  data-w={imageW}
+  data-h={imageH}
+></canvas>
 
 <script>
   import * as THREE from 'three';
 
   document.addEventListener('DOMContentLoaded', () => {
-    const canvas  = document.getElementById('canvas') as HTMLCanvasElement;
-    const hint    = document.getElementById('hint') as HTMLParagraphElement;
+    const canvas   = document.getElementById('canvas') as HTMLCanvasElement;
     const imageSrc = canvas.dataset.src!;
     const imageW   = Number(canvas.dataset.w);
     const imageH   = Number(canvas.dataset.h);
-
-    const isMobile = window.matchMedia('(pointer: coarse)').matches;
-    hint.textContent = isMobile
-      ? 'touch and drag to ripple the dots'
-      : 'move the cursor over the dots';
-
-    // Fade hint out after 4 s
-    setTimeout(() => { hint.style.opacity = '0'; }, 4000);
 
     // ── Spring ──────────────────────────────────────────────────────────────
     let targetX = -9999, targetY = -9999;

@@ -7,6 +7,8 @@ const meta: ExperimentMeta = {
   tags: ['three.js', 'points', 'interactive'],
   date: '2026-04-07',
   thumbnail,
+  notes: 'move the cursor over the dots',
+  mobileNotes: 'touch and drag to ripple the dots',
 };
 
 export default meta;
