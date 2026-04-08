@@ -1,12 +1,22 @@
 ---
-import src from './path1631.png';
+import src from "./path1631.png";
+const { src: imageSrc, width: imageW, height: imageH } = src;
 ---
 
-<canvas id="canvas" style="display:block;width:100%;height:100%;"></canvas>
+<canvas
+  id="canvas"
+  style="display:block;width:100%;height:100%;"
+  data-src={imageSrc}
+  data-w={imageW}
+  data-h={imageH}></canvas>
 
-<script define:vars={{ imageSrc: src.src, imageW: src.width, imageH: src.height }}>
-  const canvas = document.getElementById('canvas');
-  const gl = canvas.getContext('webgl');
+<script>
+  const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+  const imageSrc = canvas.dataset.src!;
+  const imageW = Number(canvas.dataset.w);
+  const imageH = Number(canvas.dataset.h);
+
+  const gl = canvas.getContext("webgl")!;
 
   const vs = `
     attribute vec2 a_position;
@@ -21,8 +31,11 @@ import src from './path1631.png';
     uniform vec2 u_resolution;
     uniform vec2 u_imageSize;
     uniform float u_time;
+    uniform vec2 u_mouse;
 
     const float SPACING = 7.0;
+    const float BUBBLE_RADIUS = 120.0;
+    const float BUBBLE_STRENGTH = 0.1;
 
     void main() {
       vec2 cell = floor(gl_FragCoord.xy / SPACING);
@@ -57,25 +70,53 @@ import src from './path1631.png';
       // Image is black-on-white; invert so dark areas = larger dots
       float brightness = 1.0 - luma;
 
-      vec2 offset = (gl_FragCoord.xy - cellCenter) / SPACING;
-      float dist = length(offset);
+      if (brightness < 0.4) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+      }
+
+      // Bubble: how much this dot is lifted toward the viewer
+      vec2 mouseGL = vec2(u_mouse.x, u_resolution.y - u_mouse.y);
+      float mouseDist = length(cellCenter - mouseGL);
+      float bubble = exp(-mouseDist * mouseDist / (2.0 * BUBBLE_RADIUS * BUBBLE_RADIUS));
+
+      // Light from top-left → shadow falls bottom-right
+      vec2 lightDir = normalize(vec2(-1.0, 1.0));
+      float lift = bubble * SPACING * 2.0;
+
+      // Dot shifts slightly toward light as it lifts
+      vec2 dotCenter = cellCenter - lightDir * lift * 0.5;
+      // Shadow offset away from light, proportional to lift
+      vec2 shadowCenter = cellCenter + lightDir * lift * 0.8;
 
       float pulse = 1.0 + 0.04 * sin(u_time * 1.2);
       float radius = brightness * 0.44 * pulse;
-      float alpha = smoothstep(radius + 0.04, radius - 0.04, dist);
 
-      gl_FragColor = vec4(alpha, alpha, alpha, 1.0);
+      // Dot grows as it lifts — bigger = closer to viewer
+      float dotRadius = radius * (1.0 + bubble * 1.2);
+      float distDot = length(gl_FragCoord.xy - dotCenter) / SPACING;
+      float dotAlpha = smoothstep(dotRadius + 0.04, dotRadius - 0.04, distDot);
+
+      // Shadow: scales with lift, gets softer at distance
+      float shadowRadius = radius * (1.0 + bubble * 0.5);
+      float distShadow = length(gl_FragCoord.xy - shadowCenter) / SPACING;
+      float shadowAlpha = smoothstep(shadowRadius + 0.2, shadowRadius - 0.02, distShadow) * 0.5 * bubble;
+
+      // Compose: shadow under dot
+      float grey = shadowAlpha * (1.0 - dotAlpha);
+      float white = dotAlpha;
+      gl_FragColor = vec4(white + grey, white + grey, white + grey, 1.0);
     }
   `;
 
-  function compileShader(type, source) {
-    const shader = gl.createShader(type);
+  function compileShader(type: number, source: string) {
+    const shader = gl.createShader(type)!;
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
     return shader;
   }
 
-  const program = gl.createProgram();
+  const program = gl.createProgram()!;
   gl.attachShader(program, compileShader(gl.VERTEX_SHADER, vs));
   gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fs));
   gl.linkProgram(program);
@@ -84,19 +125,45 @@ import src from './path1631.png';
   // Full-screen quad
   const buf = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-    -1, -1,  1, -1, -1,  1,
-    -1,  1,  1, -1,  1,  1,
-  ]), gl.STATIC_DRAW);
+  gl.bufferData(
+    gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+    gl.STATIC_DRAW,
+  );
 
-  const posLoc = gl.getAttribLocation(program, 'a_position');
+  const posLoc = gl.getAttribLocation(program, "a_position");
   gl.enableVertexAttribArray(posLoc);
   gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
 
-  const uResolution = gl.getUniformLocation(program, 'u_resolution');
-  const uImageSize = gl.getUniformLocation(program, 'u_imageSize');
-  const uTime = gl.getUniformLocation(program, 'u_time');
-  const uImage = gl.getUniformLocation(program, 'u_image');
+  const uResolution = gl.getUniformLocation(program, "u_resolution");
+  const uImageSize = gl.getUniformLocation(program, "u_imageSize");
+  const uTime = gl.getUniformLocation(program, "u_time");
+  const uImage = gl.getUniformLocation(program, "u_image");
+  const uMouse = gl.getUniformLocation(program, "u_mouse");
+
+  // Spring state — all updated inside the draw RAF
+  let targetX = -9999,
+    targetY = -9999;
+  let springX = -9999,
+    springY = -9999;
+  let velX = 0,
+    velY = 0;
+  const STIFFNESS = 0.04;
+  const DAMPING = 0.85;
+
+  window.addEventListener("mousemove", (e) => {
+    if (targetX === -9999) {
+      springX = e.clientX;
+      springY = e.clientY;
+    }
+    targetX = e.clientX;
+    targetY = e.clientY;
+  });
+
+  window.addEventListener("mouseleave", () => {
+    targetX = -9999;
+    targetY = -9999;
+  });
 
   function resize() {
     canvas.width = window.innerWidth;
@@ -104,7 +171,7 @@ import src from './path1631.png';
     gl.viewport(0, 0, canvas.width, canvas.height);
   }
   resize();
-  window.addEventListener('resize', resize);
+  window.addEventListener("resize", resize);
 
   const texture = gl.createTexture();
   const img = new Image();
@@ -119,9 +186,20 @@ import src from './path1631.png';
     gl.uniform1i(uImage, 0);
     gl.uniform2f(uImageSize, imageW, imageH);
 
-    function draw(t) {
+    function draw(t: number) {
+      // Spring toward target every frame
+      const tx = targetX === -9999 ? -9999 : targetX;
+      const ty = targetY === -9999 ? -9999 : targetY;
+      velX += (tx - springX) * STIFFNESS;
+      velY += (ty - springY) * STIFFNESS;
+      velX *= DAMPING;
+      velY *= DAMPING;
+      springX += velX;
+      springY += velY;
+
       gl.uniform2f(uResolution, canvas.width, canvas.height);
       gl.uniform1f(uTime, t * 0.001);
+      gl.uniform2f(uMouse, springX, springY);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       requestAnimationFrame(draw);
     }
