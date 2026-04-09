@@ -4,6 +4,7 @@ import type { ExperimentMeta } from '../../experiments/types';
 
 const metaModules = import.meta.glob<{ default: ExperimentMeta }>('../../experiments/*/meta.ts', { eager: true });
 const pageModules = import.meta.glob<{ default: unknown }>('../../experiments/*/index.astro');
+const readmeModules = import.meta.glob<string>('../../experiments/*/README.md', { query: '?raw', import: 'default', eager: true });
 
 export async function getStaticPaths() {
   const metas = import.meta.glob<{ default: ExperimentMeta }>('../../experiments/*/meta.ts', { eager: true });
@@ -22,10 +23,13 @@ const { meta } = Astro.props as { meta: ExperimentMeta };
 const pageKey = `../../experiments/${slug}/index.astro`;
 const pageLoader = pageModules[pageKey];
 const Page = pageLoader ? ((await pageLoader()).default as any) : null;
+
+const readmeKey = `../../experiments/${slug}/README.md`;
+const readme = readmeModules[readmeKey] ?? null;
 ---
 
 {Page ? (
-  <ExperimentLayout title={meta.title} tags={meta.tags} notes={meta.notes} mobileNotes={meta.mobileNotes}>
+  <ExperimentLayout title={meta.title} tags={meta.tags} notes={meta.notes} mobileNotes={meta.mobileNotes} readme={readme ?? undefined}>
     <Page />
   </ExperimentLayout>
 ) : (

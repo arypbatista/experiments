@@ -6,9 +6,10 @@ interface Props {
   tags?: string[];
   notes?: string;
   mobileNotes?: string;
+  readme?: string;
 }
 
-const { title, tags = [], notes, mobileNotes } = Astro.props;
+const { title, tags = [], notes, mobileNotes, readme } = Astro.props;
 ---
 <!DOCTYPE html>
 <html lang="en">
@@ -57,32 +58,87 @@ const { title, tags = [], notes, mobileNotes } = Astro.props;
       <slot />
     </div>
 
-    <!-- Notes panel -->
-    {notes && (
-      <div id="notes-panel"
-        data-notes={notes}
-        data-mobile-notes={mobileNotes ?? notes}
-        style="
-          position: fixed;
-          bottom: 1rem; left: 1rem;
-          z-index: 50;
-          max-width: 320px;
-          background: rgba(0,0,0,0.9);
-          color: #ccc;
-          font-size: 12px;
-          line-height: 1.6;
-          border-radius: 6px;
-          padding: 0.75rem 1rem;
-        ">
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem;">
-          <span style="color: #fff; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;">Notes</span>
-          <button id="notes-close" aria-label="Close notes" style="
-            background: none; border: none; cursor: pointer;
-            color: #666; font-size: 14px; line-height: 1;
-            padding: 0 0 0 0.75rem;
-          ">✕</button>
+    <!-- Bottom-left stack: notes panel + readme button -->
+    <div style="position: fixed; bottom: 1rem; left: 1rem; z-index: 50; display: flex; flex-direction: column; gap: 8px; align-items: flex-start;">
+      {notes && (
+        <div id="notes-panel"
+          data-notes={notes}
+          data-mobile-notes={mobileNotes ?? notes}
+          style="
+            max-width: 320px;
+            background: rgba(0,0,0,0.9);
+            color: #ccc;
+            font-size: 12px;
+            line-height: 1.6;
+            border-radius: 6px;
+            padding: 0.75rem 1rem;
+          ">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem;">
+            <span style="color: #fff; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;">Notes</span>
+            <button id="notes-close" aria-label="Close notes" style="
+              background: none; border: none; cursor: pointer;
+              color: #666; font-size: 14px; line-height: 1;
+              padding: 0 0 0 0.75rem;
+            ">✕</button>
+          </div>
+          <p id="notes-text" style="margin: 0; white-space: pre-wrap;">{notes}</p>
         </div>
-        <p id="notes-text" style="margin: 0; white-space: pre-wrap;">{notes}</p>
+      )}
+      {readme && (
+        <button id="readme-btn"
+          style="
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.25);
+            color: rgba(255,255,255,0.5);
+            font-family: monospace;
+            font-size: 11px;
+            letter-spacing: 0.06em;
+            padding: 4px 10px;
+            cursor: pointer;
+          ">README.md</button>
+      )}
+    </div>
+
+    <!-- README modal -->
+    {readme && (
+      <div id="readme-modal" style="
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 9998;
+        background: rgba(0,0,0,0.85);
+        backdrop-filter: blur(4px);
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+      ">
+        <div id="readme-content" style="
+          position: relative;
+          margin: 60px auto 60px;
+          max-width: 680px;
+          width: calc(100% - 2rem);
+          background: #0d0d0d;
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 8px;
+          padding: 2rem;
+          color: #ccc;
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 13px;
+          line-height: 1.7;
+        ">
+          <button id="readme-close" aria-label="Close README" style="
+            position: sticky;
+            top: 0;
+            float: right;
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: #666;
+            font-size: 18px;
+            line-height: 1;
+            padding: 0 0 1rem 1rem;
+          ">✕</button>
+          <div id="readme-body" data-readme={readme}></div>
+        </div>
       </div>
     )}
   </body>
@@ -113,4 +169,109 @@ const { title, tags = [], notes, mobileNotes } = Astro.props;
       }
     </script>
   )}
+
+  {readme && (
+    <script>
+      import { marked } from 'marked';
+
+      const modal = document.getElementById('readme-modal') as HTMLElement;
+      const body = document.getElementById('readme-body') as HTMLElement;
+      const btn = document.getElementById('readme-btn') as HTMLElement;
+      const closeBtn = document.getElementById('readme-close') as HTMLElement;
+
+      // Render markdown once
+      const raw = body.dataset.readme ?? '';
+      body.innerHTML = marked.parse(raw) as string;
+
+      function open() { modal.style.display = 'block'; document.body.style.overflow = 'hidden'; }
+      function close() { modal.style.display = 'none'; document.body.style.overflow = ''; }
+
+      btn.addEventListener('click', open);
+      closeBtn.addEventListener('click', close);
+
+      // Close on backdrop click (outside content box)
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) close();
+      });
+
+      // Block experiment touch handlers from swallowing modal interactions
+      const stopProp = (e: Event) => e.stopPropagation();
+      for (const el of [modal, btn]) {
+        el.addEventListener('touchstart', stopProp, { passive: false });
+        el.addEventListener('touchend', stopProp, { passive: false });
+        el.addEventListener('pointerdown', stopProp);
+        el.addEventListener('pointerup', stopProp);
+      }
+
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && modal.style.display !== 'none') close();
+      });
+    </script>
+  )}
+
+  <style is:global>
+    #readme-body h1,
+    #readme-body h2,
+    #readme-body h3,
+    #readme-body h4 {
+      color: #fff;
+      margin: 1.5em 0 0.5em;
+      line-height: 1.3;
+      font-weight: 600;
+    }
+    #readme-body h1 { font-size: 1.4em; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.3em; }
+    #readme-body h2 { font-size: 1.15em; border-bottom: 1px solid rgba(255,255,255,0.07); padding-bottom: 0.2em; }
+    #readme-body h3 { font-size: 1em; }
+    #readme-body h4 { font-size: 0.9em; color: rgba(255,255,255,0.7); }
+    #readme-body p  { margin: 0.6em 0; }
+    #readme-body a  { color: #77ddff; text-decoration: none; }
+    #readme-body a:hover { text-decoration: underline; }
+    #readme-body ul,
+    #readme-body ol { margin: 0.5em 0 0.5em 1.4em; padding: 0; }
+    #readme-body li { margin: 0.25em 0; }
+    #readme-body code {
+      background: rgba(255,255,255,0.08);
+      border-radius: 3px;
+      padding: 0.15em 0.4em;
+      font-size: 0.9em;
+    }
+    #readme-body pre {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 5px;
+      padding: 1em;
+      overflow-x: auto;
+      margin: 0.8em 0;
+    }
+    #readme-body pre code {
+      background: none;
+      padding: 0;
+      font-size: 0.85em;
+    }
+    #readme-body blockquote {
+      border-left: 3px solid rgba(255,255,255,0.2);
+      margin: 0.8em 0;
+      padding: 0.2em 1em;
+      color: rgba(255,255,255,0.5);
+    }
+    #readme-body table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 0.8em 0;
+      font-size: 0.9em;
+    }
+    #readme-body th,
+    #readme-body td {
+      border: 1px solid rgba(255,255,255,0.12);
+      padding: 0.4em 0.7em;
+      text-align: left;
+    }
+    #readme-body th { color: #fff; background: rgba(255,255,255,0.05); }
+    #readme-body hr {
+      border: none;
+      border-top: 1px solid rgba(255,255,255,0.1);
+      margin: 1.5em 0;
+    }
+    #readme-body strong { color: #fff; }
+  </style>
 </html>
