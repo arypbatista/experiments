@@ -69,7 +69,53 @@ The gallery and routing pick it up automatically — no registration needed.
 
 ### README
 
-A `README.md` inside the experiment folder is optional but useful for complex experiments. Document physics constants, control schemes, algorithmic decisions, and tuning tips there — anything too detailed for `description` or `notes` in `meta.ts`.
+A `README.md` inside the experiment folder is optional but encouraged for any experiment with non-trivial logic. It is the right place for anything too detailed for `description` or `notes` in `meta.ts`: physics constants, control schemes, algorithmic decisions, tuning tips.
+
+**Structure** — use these sections as needed, in this order:
+
+```markdown
+# <slug>
+
+One sentence: what technique or idea this experiment explores.
+
+## What it does
+
+Plain-language description of what's on screen and how the simulation/animation works. No code — just what a curious reader would want to know before looking at the source.
+
+## Controls
+
+| Input | Action |
+|---|---|
+| Click + drag | ... |
+| A / D | ... |
+
+Omit this section if there are no interactive controls.
+
+## Physics / Algorithm
+
+The core math or algorithm, explained briefly. Include the key formula if there is one:
+
+```
+ax = G * M * (body.x - ship.x) / r³
+```
+
+Sub-sections for constants (as a table) if the experiment has tunable values:
+
+### Constants
+
+| Constant | Value | Notes |
+|---|---|---|
+| `G` | 1 | Scaled gravitational constant |
+
+## Tuning tips
+
+Bullet list of "if X then adjust Y" notes — useful when revisiting the experiment after time away.
+
+- **Effect too strong**: decrease `CONSTANT`.
+- **Animation feels slow**: increase `SPEED`.
+```
+
+Keep it short. Not every section is required — a simple particle effect may only need "What it does" and "Tuning tips". The goal is that someone (including future-you) can understand the experiment's design decisions without reading all the code.
 
 ### Thumbnails
 
