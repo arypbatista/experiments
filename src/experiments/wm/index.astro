@@ -223,7 +223,6 @@ let drag: {
   ivx: number; ivy: number;
 } | null = null;
 
-let dropTarget: { win: Win; zone: 'left'|'right'|'top'|'bottom'|'center' } | null = null;
 
 const ms: ManagerState = { sticky: false, contain: true, canvasMode: 'viewport' };
 
@@ -443,17 +442,18 @@ window.addEventListener('pointermove', (e: PointerEvent) => {
   updateDropOverlay(win, e.clientX, e.clientY);
 });
 
-window.addEventListener('pointerup', (_e: PointerEvent) => {
+window.addEventListener('pointerup', (e: PointerEvent) => {
   if (!drag) return;
   const win = wins.get(drag.id);
   if (!win) { drag = null; return; }
 
   win.dragging = false;
   win.el.classList.remove('is-dragging');
-
-  const hit = dropTarget;
-  clearDropOverlay();
   drag = null;
+
+  // Fresh hit-test at exact release coords (z-index order), then clear the overlay.
+  const hit = detectDropTarget(win, e.clientX, e.clientY);
+  clearDropOverlay();
 
   if (hit && hit.zone !== 'center') {
     applyTileDrop(win, hit.win, hit.zone);
@@ -474,41 +474,49 @@ window.addEventListener('pointercancel', () => {
   drag = null;
 });
 
-// ─── Drop zone overlay ────────────────────────────────────────────────────────
+// ─── Drop zone detection & overlay ───────────────────────────────────────────
 
-function updateDropOverlay(dragging: Win, mx: number, my: number) {
-  clearDropOverlay();
+type DropZone = 'left'|'right'|'top'|'bottom'|'center';
+type DropHit  = { win: Win; zone: DropZone } | null;
 
-  for (const [id, win] of wins) {
-    if (id === dragging.id || win.closed || win.minimized) continue;
+/** Hit-test at (mx, my) against all windows except dragging, topmost first. */
+function detectDropTarget(dragging: Win, mx: number, my: number): DropHit {
+  const candidates = [...wins.values()]
+    .filter(w => w.id !== dragging.id && !w.closed && !w.minimized)
+    .sort((a, b) => b.z - a.z); // highest z-index first
+
+  for (const win of candidates) {
     const rect = win.el.getBoundingClientRect();
     if (mx < rect.left || mx > rect.right || my < rect.top || my > rect.bottom) continue;
 
     const rx = (mx - rect.left) / rect.width;
     const ry = (my - rect.top)  / rect.height;
 
-    let zone: 'left'|'right'|'top'|'bottom'|'center';
+    let zone: DropZone;
     if      (rx < 0.25) zone = 'left';
     else if (rx > 0.75) zone = 'right';
     else if (ry < 0.25) zone = 'top';
     else if (ry > 0.75) zone = 'bottom';
     else                zone = 'center';
 
-    showZone(win, zone);
-    dropTarget = { win, zone };
-    break;
+    return { win, zone };
   }
+  return null;
 }
 
-function showZone(win: Win, zone: string) {
+function updateDropOverlay(dragging: Win, mx: number, my: number) {
+  clearDropOverlay();
+  const hit = detectDropTarget(dragging, mx, my);
+  if (!hit) return;
+
   const overlay = document.createElement('div');
   overlay.className = 'drop-overlay';
   overlay.id = 'drop-overlay';
 
   const hl = document.createElement('div');
-  hl.className = zone === 'center' ? 'drop-zone-hl center' : 'drop-zone-hl';
+  hl.className = hit.zone === 'center' ? 'drop-zone-hl center' : 'drop-zone-hl';
 
-  switch (zone) {
+  switch (hit.zone) {
     case 'left':   hl.style.cssText = 'top:0;left:0;width:50%;height:100%;'; break;
     case 'right':  hl.style.cssText = 'top:0;right:0;width:50%;height:100%;'; break;
     case 'top':    hl.style.cssText = 'top:0;left:0;right:0;height:50%;'; break;
@@ -517,12 +525,11 @@ function showZone(win: Win, zone: string) {
   }
 
   overlay.appendChild(hl);
-  win.el.appendChild(overlay);
+  hit.win.el.appendChild(overlay);
 }
 
 function clearDropOverlay() {
   document.getElementById('drop-overlay')?.remove();
-  dropTarget = null;
 }
 
 // ─── Tile drop ────────────────────────────────────────────────────────────────
