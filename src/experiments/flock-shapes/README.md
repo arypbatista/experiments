@@ -1,4 +1,4 @@
-# Flock Images
+# Flock Shapes
 
 Particles flock together to form a series of 3D shapes. Each particle is an autonomous agent
 driven by steering behaviors — seek and avoid — ported from
@@ -47,7 +47,7 @@ Manages all dots as a group:
 
 ### Wave effect
 
-Rendered positions are perturbed by a three-term sinusoidal ripple applied *after* physics — the
+Rendered positions are perturbed by a three-term sinusoidal ripple applied _after_ physics — the
 underlying dot positions are clean, only the visuals wobble:
 
 ```
@@ -64,7 +64,7 @@ which suppresses visual noise during transitions when dots are moving fast.
 ### Shape data
 
 Seven shapes use `.sorted.vertices` files (pre-sorted so spatially adjacent points have nearby
-array indices — this produces smoother transitions since dot *i* seeks a nearby target rather
+array indices — this produces smoother transitions since dot _i_ seeks a nearby target rather
 than one across the mesh). Figure08 uses the unsorted original. All files are JSON arrays of
 `{x, y, z}` objects, capped at 3 500 points.
 
@@ -73,32 +73,32 @@ site's section-driven animation sequence.
 
 ## Parameters
 
-| Slider | Range | Effect |
-|---|---|---|
-| SPEED | 0.05 – 0.60 | `maxSpeed` per dot per frame (world units) |
-| FORCE | 0.005 – 0.080 | `maxForce` steering limit per axis per frame |
-| RIPPLE | 0 – 0.35 | Wave displacement amplitude |
-| DOT SIZE | 0.3 – 2.5 | `THREE.PointsMaterial` size |
-| HOLD (s) | 1 – 10 | Seconds each formed shape is displayed before the next transition |
+| Slider   | Range         | Effect                                                            |
+| -------- | ------------- | ----------------------------------------------------------------- |
+| SPEED    | 0.05 – 0.60   | `maxSpeed` per dot per frame (world units)                        |
+| FORCE    | 0.005 – 0.080 | `maxForce` steering limit per axis per frame                      |
+| RIPPLE   | 0 – 0.35      | Wave displacement amplitude                                       |
+| DOT SIZE | 0.3 – 2.5     | `THREE.PointsMaterial` size                                       |
+| HOLD (s) | 1 – 10        | Seconds each formed shape is displayed before the next transition |
 
 ## Constants
 
-| Constant | Value | Notes |
-|---|---|---|
-| `MAX_DOTS` | 3 500 | Cluster size; fixed at init from the first shape's point count |
-| `steerVanishDistance` | 10 | Distance at which seek ratio reaches 1 (full speed) |
-| `avoidDecayRate` | 0.985 | Per-frame multiplier on avoidance strength |
-| Initial boost | 5× | Speed and force multiplier applied only during first formation |
-| Transition boost | 1× (0.5 added) | `setBoost()` default — `maxSpeed × 1.5`, `maxForce × 1.5` |
+| Constant              | Value          | Notes                                                          |
+| --------------------- | -------------- | -------------------------------------------------------------- |
+| `MAX_DOTS`            | 3 500          | Cluster size; fixed at init from the first shape's point count |
+| `steerVanishDistance` | 10             | Distance at which seek ratio reaches 1 (full speed)            |
+| `avoidDecayRate`      | 0.985          | Per-frame multiplier on avoidance strength                     |
+| Initial boost         | 5×             | Speed and force multiplier applied only during first formation |
+| Transition boost      | 1× (0.5 added) | `setBoost()` default — `maxSpeed × 1.5`, `maxForce × 1.5`      |
 
 ## Controls
 
-| Input | Action |
-|---|---|
-| Left-drag | Orbit camera around scene center |
-| Scroll | Zoom in / out (20 – 300 units) |
-| Shape buttons 1–8 | Jump to that figure; exits AUTO mode |
-| AUTO button | Resume choreography from the beginning |
+| Input             | Action                                 |
+| ----------------- | -------------------------------------- |
+| Left-drag         | Orbit camera around scene center       |
+| Scroll            | Zoom in / out (20 – 300 units)         |
+| Shape buttons 1–8 | Jump to that figure; exits AUTO mode   |
+| AUTO button       | Resume choreography from the beginning |
 
 ## Tuning tips
 

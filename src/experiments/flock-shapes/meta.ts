@@ -2,7 +2,7 @@ import type { ExperimentMeta } from "../types";
 import thumbnail from "./thumbnail.png";
 
 const meta: ExperimentMeta = {
-  title: "Flock Images",
+  title: "Flock Shapes",
   description:
     "Particles flock and scatter to form 3D shapes using seek/avoid steering behaviors.",
   tags: ["three.js", "particles", "boids", "3d"],
