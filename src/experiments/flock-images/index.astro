@@ -1,0 +1,709 @@
+---
+---
+
+<canvas id="canvas" style="display:block;width:100%;height:100%;position:fixed;inset:0;"></canvas>
+
+<div id="controls" style="
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(0,0,0,0.55);
+  border: 1px solid rgba(255,255,255,0.15);
+  padding: 12px;
+  font-family: monospace;
+  font-size: 11px;
+  color: rgba(255,255,255,0.7);
+  user-select: none;
+  min-width: 148px;
+">
+  <!-- Shape selector -->
+  <div style="letter-spacing: 0.12em; font-size: 10px; opacity: 0.45;">SHAPE</div>
+  <div id="shape-buttons" style="display: flex; flex-wrap: wrap; gap: 4px;"></div>
+  <div id="load-status" style="font-size:10px;letter-spacing:0.08em;color:rgba(110,224,202,0.55);height:13px;display:none;"></div>
+  <button id="auto-btn" style="
+    padding: 4px 8px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.2);
+    color: rgba(255,255,255,0.7);
+    font-family: monospace;
+    font-size: 11px;
+    cursor: pointer;
+    letter-spacing: 0.08em;
+  ">AUTO ○</button>
+
+  <!-- Divider -->
+  <div style="border-top: 1px solid rgba(255,255,255,0.1); margin: 4px 0;"></div>
+
+  <!-- Parameters -->
+  <div style="letter-spacing: 0.12em; font-size: 10px; opacity: 0.45;">PARAMS</div>
+
+  <div class="param">
+    <span>SPEED</span><span id="v-speed">0.20</span>
+    <input type="range" id="sl-speed" min="5" max="60" value="20" step="1">
+  </div>
+  <div class="param">
+    <span>FORCE</span><span id="v-force">0.025</span>
+    <input type="range" id="sl-force" min="5" max="80" value="25" step="1">
+  </div>
+  <div class="param">
+    <span>RIPPLE</span><span id="v-ripple">0.15</span>
+    <input type="range" id="sl-ripple" min="0" max="35" value="15" step="1">
+  </div>
+  <div class="param">
+    <span>DOT SIZE</span><span id="v-size">0.9</span>
+    <input type="range" id="sl-size" min="3" max="25" value="9" step="1">
+  </div>
+  <div class="param">
+    <span>HOLD (s)</span><span id="v-hold">3.5</span>
+    <input type="range" id="sl-hold" min="10" max="100" value="35" step="5">
+  </div>
+  <div class="param">
+    <span>DOTS</span><span id="v-dots">3500</span>
+    <input type="range" id="sl-dots" min="250" max="5000" value="3500" step="250">
+  </div>
+</div>
+
+<style is:global>
+  @keyframes flock-pulse { 0%,100% { opacity:0.35; } 50% { opacity:0.75; } }
+
+  #controls .param {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  #controls .param > div,
+  #controls .param > span {
+    font-size: 10px;
+  }
+  #controls .param > :first-child {
+    display: flex;
+    justify-content: space-between;
+    opacity: 0.6;
+    letter-spacing: 0.08em;
+    font-size: 10px;
+  }
+  /* Fake the label row — each .param has two spans as first child workaround */
+  #controls .param input[type=range] {
+    width: 100%;
+    margin: 0;
+    accent-color: rgb(110, 224, 202);
+    cursor: pointer;
+    height: 14px;
+  }
+</style>
+
+<!-- Fix: wrap each param label+value in a div, use JS to build them -->
+<script>
+// Fix param rows: each .param div has [label span] [value span] [input]
+// Restructure so label+value are on one flex row
+document.querySelectorAll('#controls .param').forEach(p => {
+  const spans = p.querySelectorAll('span');
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;justify-content:space-between;opacity:0.6;letter-spacing:0.08em;font-size:10px;margin-bottom:1px;';
+  spans.forEach(s => row.appendChild(s));
+  p.insertBefore(row, p.firstChild);
+});
+</script>
+
+<script>
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+type Vec3 = { x: number; y: number; z: number };
+
+// ─── Mutable params (driven by sliders) ──────────────────────────────────────
+
+let pSpeed    = 0.2;   // dot maxSpeed
+let pForce    = 0.025; // dot maxForce
+let pRipple   = 0.15;  // wave amplitude
+let pDotSize  = 0.9;   // PointsMaterial size
+let pHold     = 3500;  // ms to display each formed shape
+
+// ─── FlyingDot ────────────────────────────────────────────────────────────────
+
+class FlyingDot {
+  position: THREE.Vector3;
+  velocity: THREE.Vector3;
+  acceleration: THREE.Vector3;
+  maxSpeed: number;
+  maxForce: number;
+  steerVanishDistance: number;
+
+  constructor(v: Vec3, opts: { maxSpeed?: number; maxForce?: number; steerVanishDistance?: number } = {}) {
+    this.position = new THREE.Vector3(v.x, v.y, v.z);
+    this.maxSpeed = opts.maxSpeed ?? 0.2;
+    this.maxForce = opts.maxForce ?? 0.025;
+    this.steerVanishDistance = opts.steerVanishDistance ?? 10;
+    this.velocity = new THREE.Vector3(
+      Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5
+    ).normalize().multiplyScalar(Math.random() * this.maxSpeed * 0.3);
+    this.acceleration = new THREE.Vector3();
+  }
+
+  getUnitSpeed() { return this.velocity.length() / this.maxSpeed; }
+  applyForce(f: THREE.Vector3) { this.acceleration.add(f); }
+
+  update() {
+    this.velocity.add(this.acceleration);
+    if (this.velocity.length() > this.maxSpeed)
+      this.velocity.clampLength(0, this.maxSpeed);
+    this.position.add(this.velocity);
+    this.acceleration.set(0, 0, 0);
+  }
+
+  seek(target: Vec3, opts: {
+    offset?: THREE.Vector3;
+    maxSpeedBoost?: number;
+    maxForceBoost?: number;
+    forcePercentage?: number;
+    maxForce?: number;
+  } = {}) {
+    const maxSpeed = this.maxSpeed * (1 + (opts.maxSpeedBoost ?? 0));
+    const maxForce = (opts.maxForce ?? this.maxForce) * (1 + (opts.maxForceBoost ?? 0));
+    const fp     = opts.forcePercentage ?? 1;
+    const offset = opts.offset ?? new THREE.Vector3();
+
+    const t        = new THREE.Vector3(target.x, target.y, target.z).add(offset);
+    const distance = t.distanceTo(this.position);
+    const ratio    = Math.max(0.001, Math.min(1, distance / this.steerVanishDistance));
+    const desired  = t.clone().sub(this.position).normalize().multiplyScalar(maxSpeed * ratio);
+    const steer    = desired.sub(this.velocity);
+    steer.clampScalar(-maxForce, maxForce);
+    this.applyForce(steer.multiplyScalar(fp));
+    return { distance };
+  }
+
+  avoid(target: THREE.Vector3, decay: number) {
+    const away     = this.position.clone().sub(target);
+    const distance = Math.max(away.length(), 0.01);
+    const seekTarget = away.multiplyScalar((20 / distance) * decay).add(this.position);
+    return this.seek(seekTarget, { maxForce: this.maxForce * 0.2 });
+  }
+}
+
+// ─── FlyingCluster ────────────────────────────────────────────────────────────
+
+class FlyingCluster {
+  dots: FlyingDot[];
+  avoidDecay: number;
+  avoidPoint: THREE.Vector3 | null;
+  seekPoints: Vec3[];
+  seekPointsOriginalLength: number;
+  seekOffset: THREE.Vector3;
+  seekReached: (v: boolean) => void;
+  seekDistanceAccumulator: number;
+  seekDistance: number;
+  maxSpeedBoost: number;
+  maxForceBoost: number;
+
+  constructor(points: Vec3[], opts: { dotOptions?: { maxSpeed?: number; maxForce?: number; steerVanishDistance?: number } } = {}) {
+    const dotOpts = opts.dotOptions ?? {};
+    this.dots     = points.map(v => new FlyingDot(v, dotOpts));
+    this.avoidDecay = 0;
+    this.avoidPoint = null;
+    this.seekPoints = [];
+    this.seekPointsOriginalLength = 0;
+    this.seekOffset = new THREE.Vector3();
+    this.seekReached = () => {};
+    this.seekDistanceAccumulator = 0;
+    this.seekDistance  = 0;
+    this.maxSpeedBoost = 0;
+    this.maxForceBoost = 0;
+  }
+
+  setBoost(speedMult = 1, forceMult = 1) {
+    this.maxSpeedBoost = 0.5 * speedMult;
+    this.maxForceBoost = 0.5 * forceMult;
+  }
+
+  seek(seekPoints: Vec3[], opts: { offset?: THREE.Vector3 } = {}) {
+    this.seekPoints = [...seekPoints];
+    this.seekPointsOriginalLength = seekPoints.length;
+    this.seekOffset = opts.offset ?? new THREE.Vector3();
+    this.seekReached(false);
+    this.seekReached = () => {};
+    return this.seekPointsOriginalLength >= 1
+      ? new Promise<boolean>(resolve => { this.seekReached = resolve; })
+      : Promise.resolve(false);
+  }
+
+  avoid(point: THREE.Vector3) {
+    this.avoidPoint = point.clone();
+    this.avoidDecay = 1;
+  }
+
+  getDot(i: number) { return this.dots[i % this.dots.length]; }
+  getPosition(i: number) { return this.getDot(i).position; }
+
+  update() {
+    this.seekDistanceAccumulator = 0;
+
+    for (let i = 0; i < this.dots.length; i++) {
+      const dot = this.getDot(i);
+
+      if (this.avoidDecay > 0.02 && this.avoidPoint) {
+        dot.avoid(this.avoidPoint, this.avoidDecay);
+      }
+
+      if (this.seekPoints.length > 0) {
+        if (i >= this.seekPoints.length) {
+          const sp = this.seekPoints[i % this.seekPointsOriginalLength];
+          this.seekPoints.push({
+            x: sp.x + (Math.random() - 0.5) * 0.2,
+            y: sp.y + (Math.random() - 0.5) * 0.2,
+            z: sp.z + (Math.random() - 0.5) * 0.2,
+          });
+        }
+        const { distance } = dot.seek(this.seekPoints[i], {
+          forcePercentage: 1 - this.avoidDecay,
+          offset: this.seekOffset,
+          maxSpeedBoost: this.maxSpeedBoost,
+          maxForceBoost: this.maxForceBoost,
+        });
+        this.seekDistanceAccumulator += distance;
+      }
+
+      dot.update();
+    }
+
+    if (this.avoidDecay > 0.001) this.avoidDecay *= 0.985;
+    else this.avoidPoint = null;
+
+    this.seekDistance = this.seekDistanceAccumulator / Math.max(1, this.seekPoints.length);
+    if (this.seekDistance <= 1 && this.seekPoints.length >= 1) {
+      this.seekReached(true);
+      this.seekReached = () => {};
+    }
+  }
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const MAX_DOTS   = 5000; // shapes always load up to this many points
+let   pDots      = 3500; // current cluster size (driven by slider)
+const DOT_COLOR  = 0xffffff;
+const DOT_OPACITY = 0.55;
+
+const FIGURE_NAMES = [
+  'Figure01', 'Figure02', 'Figure03', 'Figure04',
+  'Figure05', 'Figure06', 'Figure07', 'Figure08',
+];
+const CHOREOGRAPHY = [
+  'Figure08', 'Figure07', 'Figure04', 'Figure05',
+  'Figure02', 'Figure06', 'Figure01', 'Figure03',
+];
+const AVOID_POINTS = [
+  new THREE.Vector3(5, -6, -2.5),
+  new THREE.Vector3(5,  6, -2.5),
+  new THREE.Vector3(-5, 10, -2.5),
+  new THREE.Vector3(-10, -8, -10.5),
+  new THREE.Vector3(0,   0,  2.5),
+  new THREE.Vector3(5,  -2, -2.5),
+  new THREE.Vector3(10, 10, -2.5),
+];
+
+let avoidIdx = 0;
+function nextAvoidPoint() {
+  return AVOID_POINTS[avoidIdx++ % AVOID_POINTS.length];
+}
+
+// ─── Shape loading ────────────────────────────────────────────────────────────
+
+const shapes: Record<string, Vec3[]> = {};
+
+async function loadShape(name: string): Promise<Vec3[]> {
+  if (shapes[name]) return shapes[name];
+  const suffix = name === 'Figure08' ? '' : '.sorted';
+  const res  = await fetch(`/flock-images/${name}${suffix}.json`);
+  const data: Vec3[] = await res.json();
+  shapes[name] = data.slice(0, MAX_DOTS);
+  return shapes[name];
+}
+
+// ─── Three.js scene ───────────────────────────────────────────────────────────
+
+const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setClearColor(0x000000, 1);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 2000);
+camera.position.set(0, -80, 55);
+camera.lookAt(0, 2, 0);
+camera.updateProjectionMatrix();
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.04;
+controls.minDistance = 20;
+controls.maxDistance = 300;
+controls.update();
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ─── Point cloud ─────────────────────────────────────────────────────────────
+
+let cluster:     FlyingCluster;
+let posAttr:     THREE.BufferAttribute;
+let material:    THREE.PointsMaterial;
+let pointsMesh:  THREE.Points | null = null;
+let initialSteps: Float32Array;
+let globalStep   = 0;
+
+function buildPointCloud(n: number, inheritOpacity = 0) {
+  if (pointsMesh) scene.remove(pointsMesh);
+
+  const buf = new Float32Array(n * 3);
+  const geometry = new THREE.BufferGeometry();
+  const attr = new THREE.BufferAttribute(buf, 3);
+  attr.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute('position', attr);
+
+  const mat = new THREE.PointsMaterial({
+    color: DOT_COLOR, size: pDotSize, opacity: inheritOpacity, transparent: true,
+  });
+  pointsMesh = new THREE.Points(geometry, mat);
+  scene.add(pointsMesh);
+  return { attr, mat };
+}
+
+// ─── Render loop ──────────────────────────────────────────────────────────────
+
+function animate() {
+  requestAnimationFrame(animate);
+  if (!cluster || !posAttr) return;
+
+  cluster.update();
+  globalStep += 0.01;
+
+  const pos = posAttr.array as Float32Array;
+  const n   = cluster.dots.length;
+
+  for (let i = 0; i < n; i++) {
+    const dot = cluster.dots[i];
+    const { x, y, z } = dot.position;
+
+    const unitSpeed  = dot.getUnitSpeed();
+    const localImpact = pRipple * 0.75 * (1 - unitSpeed) + pRipple * 0.25;
+    const step       = initialSteps[i] + globalStep;
+
+    const delta = (px: number, py: number, pz: number) =>
+      (Math.sin((px / 2 + step) * Math.PI * 2) +
+       Math.cos((pz / 2 + step * 2) * Math.PI) +
+       Math.sin(((px + py + step * 2) / 4) * Math.PI)) * localImpact;
+
+    const dx = x + delta(x, y, z);
+    const dy = y + delta(dx, y, z);
+    const dz = z + delta(dx, dy, z);
+
+    pos[i * 3]     = dx;
+    pos[i * 3 + 1] = dy;
+    pos[i * 3 + 2] = dz;
+  }
+
+  posAttr.needsUpdate = true;
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+// ─── Choreography ─────────────────────────────────────────────────────────────
+
+let autoMode        = true;
+let currentShapeName = '';
+
+async function setShape(name: string, { expand = true } = {}) {
+  if (name === currentShapeName) return;
+  currentShapeName = name;
+  const points = shapes[name];
+  if (!points) return;
+
+  if (expand) {
+    cluster.setBoost();
+    cluster.avoid(nextAvoidPoint());
+  }
+
+  await cluster.seek(points);
+  updateShapeButtons();
+}
+
+async function manualSetShape(name: string) {
+  autoMode = false;
+  updateAutoButton();
+  await setShape(name, { expand: currentShapeName !== '' });
+}
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+async function runChoreography() {
+  while (autoMode) {
+    for (const name of CHOREOGRAPHY) {
+      if (!autoMode) return;
+      if (!shapes[name]) continue;
+      await setShape(name, { expand: currentShapeName !== '' });
+      if (!autoMode) return;
+      await sleep(pHold);
+    }
+  }
+}
+
+// ─── UI: shape buttons ────────────────────────────────────────────────────────
+
+const autoBtn   = document.getElementById('auto-btn') as HTMLButtonElement;
+const shapeArea = document.getElementById('shape-buttons') as HTMLDivElement;
+
+function updateAutoButton() {
+  const on = autoMode;
+  autoBtn.textContent  = on ? 'AUTO ●' : 'AUTO ○';
+  autoBtn.style.background  = on ? 'rgba(110,224,202,0.18)' : 'rgba(255,255,255,0.08)';
+  autoBtn.style.borderColor = on ? 'rgba(110,224,202,0.4)'  : 'rgba(255,255,255,0.2)';
+  autoBtn.style.color       = on ? 'rgba(110,224,202,0.9)'  : 'rgba(255,255,255,0.7)';
+}
+
+function updateShapeButtons() {
+  for (const el of shapeArea.children as HTMLCollectionOf<HTMLButtonElement>) {
+    const name   = el.dataset.shape!;
+    const active = name === currentShapeName && !autoMode;
+    el.style.background  = active ? 'rgba(110,224,202,0.22)' : 'rgba(255,255,255,0.08)';
+    el.style.borderColor = active ? 'rgba(110,224,202,0.5)'  : 'rgba(255,255,255,0.15)';
+    el.style.color       = active ? 'rgba(110,224,202,1)'    : 'rgba(255,255,255,0.75)';
+  }
+}
+
+FIGURE_NAMES.forEach((name, i) => {
+  const btn = document.createElement('button');
+  btn.dataset.shape = name;
+  btn.textContent   = String(i + 1);
+  Object.assign(btn.style, {
+    padding: '4px 0', width: '28px',
+    background: 'rgba(255,255,255,0.08)',
+    border: '1px solid rgba(255,255,255,0.15)',
+    color: 'rgba(255,255,255,0.75)',
+    fontFamily: 'monospace', fontSize: '11px',
+    cursor: 'default', opacity: '0.3',
+    letterSpacing: '0.05em',
+  });
+  btn.addEventListener('click', () => {
+    if (!shapes[name]) return;
+    manualSetShape(name);
+  });
+  shapeArea.appendChild(btn);
+});
+
+autoBtn.addEventListener('click', () => {
+  if (!autoMode) {
+    autoMode = true;
+    currentShapeName = '';
+    updateAutoButton();
+    updateShapeButtons();
+    runChoreography();
+  }
+});
+
+updateAutoButton();
+
+// ─── UI: parameter sliders ────────────────────────────────────────────────────
+
+function bindSlider(
+  id: string,
+  valId: string,
+  toValue: (raw: number) => number,
+  format: (v: number) => string,
+  apply: (v: number) => void,
+) {
+  const sl  = document.getElementById(id) as HTMLInputElement;
+  const lbl = document.getElementById(valId) as HTMLSpanElement;
+  sl.addEventListener('input', () => {
+    const v = toValue(Number(sl.value));
+    lbl.textContent = format(v);
+    apply(v);
+  });
+}
+
+bindSlider('sl-speed',  'v-speed',  r => r / 100,    v => v.toFixed(2),   v => {
+  pSpeed = v;
+  if (cluster) cluster.dots.forEach(d => d.maxSpeed = v);
+});
+bindSlider('sl-force',  'v-force',  r => r / 1000,   v => v.toFixed(3),   v => {
+  pForce = v;
+  if (cluster) cluster.dots.forEach(d => d.maxForce = v);
+});
+bindSlider('sl-ripple', 'v-ripple', r => r / 100,    v => v.toFixed(2),   v => { pRipple = v; });
+bindSlider('sl-size',   'v-size',   r => r / 10,     v => v.toFixed(1),   v => {
+  pDotSize = v;
+  if (material) material.size = v;
+});
+bindSlider('sl-hold',   'v-hold',   r => r / 10,     v => v.toFixed(1),   v => { pHold = v * 1000; });
+
+// DOTS slider: update label on input, rebuild on change
+(function () {
+  const sl  = document.getElementById('sl-dots') as HTMLInputElement;
+  const lbl = document.getElementById('v-dots') as HTMLSpanElement;
+  sl.addEventListener('input', () => {
+    pDots = Number(sl.value);
+    lbl.textContent = String(pDots);
+  });
+  sl.addEventListener('change', () => {
+    pDots = Number(sl.value);
+    rebuildCluster(pDots);
+  });
+})();
+
+// ─── Loading helpers ──────────────────────────────────────────────────────────
+
+const loadStatus = document.getElementById('load-status') as HTMLDivElement;
+let loadDots = 0;
+let loadInterval: ReturnType<typeof setInterval> | null = null;
+
+function startLoadStatus() {
+  loadStatus.style.display = 'block';
+  loadStatus.style.animation = 'flock-pulse 1.2s ease-in-out infinite';
+  loadDots = 0;
+  loadStatus.textContent = 'shapes';
+  loadInterval = setInterval(() => {
+    loadDots = (loadDots + 1) % 4;
+    loadStatus.textContent = 'shapes' + '.'.repeat(loadDots);
+  }, 350);
+}
+
+function stopLoadStatus() {
+  if (loadInterval) { clearInterval(loadInterval); loadInterval = null; }
+  loadStatus.style.display = 'none';
+}
+
+function markButtonLoaded(name: string) {
+  for (const el of shapeArea.children as HTMLCollectionOf<HTMLButtonElement>) {
+    if (el.dataset.shape === name) {
+      el.style.opacity = '1';
+      el.style.cursor  = 'pointer';
+    }
+  }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function computeCenter(points: Vec3[]) {
+  const box = new THREE.Box3();
+  for (const p of points) box.expandByPoint(new THREE.Vector3(p.x, p.y, p.z));
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  return center;
+}
+
+// ─── Rebuild cluster ──────────────────────────────────────────────────────────
+
+function rebuildCluster(n: number) {
+  const prevOpacity = material?.opacity ?? DOT_OPACITY;
+
+  // Cancel in-flight seek
+  cluster?.seek([]);
+
+  const randomPts: Vec3[] = Array.from({ length: n }, () => ({
+    x: (Math.random() - 0.5) * 50,
+    y: (Math.random() - 0.5) * 50,
+    z: (Math.random() - 0.5) * 25,
+  }));
+
+  const { attr, mat } = buildPointCloud(n, prevOpacity);
+  posAttr  = attr;
+  material = mat;
+
+  initialSteps = new Float32Array(n);
+  for (let i = 0; i < n; i++) initialSteps[i] = Math.random();
+
+  cluster = new FlyingCluster(randomPts, {
+    dotOptions: { maxSpeed: pSpeed, maxForce: pForce, steerVanishDistance: 10 },
+  });
+
+  // Re-seek current shape immediately if one is active
+  if (currentShapeName && shapes[currentShapeName]) {
+    cluster.setBoost(2, 2);
+    cluster.seek(shapes[currentShapeName]);
+  }
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+
+async function main() {
+  // Scatter pDots particles in 3D space immediately — no loading wait
+  const N = pDots;
+  const randomPts: Vec3[] = Array.from({ length: N }, () => ({
+    x: (Math.random() - 0.5) * 50,
+    y: (Math.random() - 0.5) * 50,
+    z: (Math.random() - 0.5) * 25,
+  }));
+
+  const { attr, mat } = buildPointCloud(N);
+  posAttr  = attr;
+  material = mat;
+
+  cluster = new FlyingCluster(randomPts, {
+    dotOptions: { maxSpeed: pSpeed, maxForce: pForce, steerVanishDistance: 10 },
+  });
+
+  initialSteps = new Float32Array(N);
+  for (let i = 0; i < N; i++) initialSteps[i] = Math.random();
+
+  const buf = posAttr.array as Float32Array;
+  for (let i = 0; i < N; i++) {
+    const { x, y, z } = cluster.getPosition(i);
+    buf[i * 3] = x; buf[i * 3 + 1] = y; buf[i * 3 + 2] = z;
+  }
+  posAttr.needsUpdate = true;
+
+  // Start rendering immediately
+  animate();
+
+  // Fade in
+  let opacity = 0;
+  const fadeStep = () => {
+    opacity = Math.min(DOT_OPACITY, opacity + 0.012);
+    material.opacity = opacity;
+    if (opacity < DOT_OPACITY) requestAnimationFrame(fadeStep);
+  };
+  requestAnimationFrame(fadeStep);
+
+  // Load all shapes in the background
+  startLoadStatus();
+  let firstShapeSeekStarted = false;
+
+  const loadAndActivate = async (name: string) => {
+    await loadShape(name);
+    markButtonLoaded(name);
+
+    // When the first choreography shape is ready, start the flow
+    if (!firstShapeSeekStarted && name === CHOREOGRAPHY[0]) {
+      firstShapeSeekStarted = true;
+
+      // Recentre orbit on the actual bounding-box centre of the shapes
+      const center = computeCenter(shapes[CHOREOGRAPHY[0]]);
+      controls.target.copy(center);
+      camera.position.set(center.x, center.y - 80, center.z + 55);
+      controls.update();
+
+      cluster.setBoost(3, 3);
+      await cluster.seek(shapes[CHOREOGRAPHY[0]]);
+      currentShapeName = CHOREOGRAPHY[0];
+      updateShapeButtons();
+      runChoreography();
+    }
+  };
+
+  await Promise.all(FIGURE_NAMES.map(loadAndActivate));
+  stopLoadStatus();
+}
+
+main();
+</script>

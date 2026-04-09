@@ -1,6 +1,11 @@
 {
   "version": 1,
   "skills": {
+    "caveman": {
+      "source": "juliusbrussee/caveman",
+      "sourceType": "github",
+      "computedHash": "76ebe665f225f9874aa53648747e2027238d67f7d50fcddd2644d3742e9cb685"
+    },
     "git-commit": {
       "source": "github/awesome-copilot",
       "sourceType": "github",
