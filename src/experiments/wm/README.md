@@ -1,0 +1,80 @@
+# wm
+
+A physics-based DOM window manager — drag with inertia, spring snap, and edge-based tiling.
+
+## What it does
+
+Windows live on a canvas area and are dragged by their titlebars. On release, each window coasts with momentum and decays to rest. When repositioned programmatically (the REPOSITION button), windows spring toward their original positions with natural overshoot and damping. Tilts slightly in the direction of motion while dragging.
+
+Dragging a window onto another reveals a directional zone overlay: the four edge quadrants (25 % each) show a blue highlight for tiling; the center zone shows an amber dashed outline for plain overlap. Dropping on an edge springs the dragged window flush against that side of the target.
+
+## Controls
+
+| Input | Action |
+|---|---|
+| Drag titlebar | Move window |
+| Click minimize (yellow dot) | Collapse window to titlebar |
+| Click close (red dot) | Dismiss window |
+| Drag onto edge of another | Tile adjacent (springs to position) |
+| Drag onto center of another | Overlap without tiling |
+| `C` | Close all windows |
+| `R` | Restart (re-spawn all windows) |
+| `P` | Reposition (spring back to original positions) |
+
+## Physics / Algorithm
+
+Each window carries position `(x, y)` and velocity `(vx, vy)`.
+
+**Momentum** — on release, velocity decays each frame:
+```
+vx *= 0.88;  vy *= 0.88;
+x  += vx;    y  += vy;
+```
+
+**Spring** — when a target position is set (reposition, tile drop, sticky snap):
+```
+vx = vx * 0.70 + (tx - x) * 0.13;
+vy = vy * 0.70 + (ty - y) * 0.13;
+x += vx;  y += vy;
+```
+Spring terminates when `|v| < 0.12` and `distance < 0.4 px`.
+
+**Tilt** — `rotate(vx * 0.35 deg)` during drag; `rotate(vx * 0.10 deg)` during free motion.
+
+**Boundary bounce** (contain mode) — on edge collision, position is clamped and velocity component is negated with 45 % damping.
+
+### Constants
+
+| Constant | Value | Notes |
+|---|---|---|
+| `MOMENTUM_DECAY` | 0.88 | Velocity multiplier per frame (~60 fps) |
+| `SPRING_K` | 0.13 | Spring stiffness |
+| `SPRING_DAMP` | 0.70 | Spring damping (< 1 = under-damped → overshoot) |
+| `MAX_TILT` | 7° | Max rotation during drag |
+| `SNAP_DIST` | 18 px | Edge proximity for sticky snap |
+| `OUTER_GUTTER` | 16 px | Min margin between window and viewport edge |
+
+## Window config
+
+```ts
+makeWin({
+  id: 'my-win',
+  title: 'Title',
+  width: 320,            // fixed px; clamped to viewport − gutter
+  height: 200,           // omit for auto height; set for fixed + scroll
+  position: { x, y },
+  showClose: true,       // default true
+  showMinimize: true,    // default true
+  content: { type: 'markdown', text: '...' },
+  // or: { type: 'html', html: '...' }  ← inline <script> tags are executed
+  // or: { type: 'image', src: '...', alt: '...' }
+});
+```
+
+## Tuning tips
+
+- **Too floaty**: increase `MOMENTUM_DECAY` toward 0.95.
+- **Spring feels stiff / no overshoot**: decrease `SPRING_K` or increase `SPRING_DAMP` toward 0.85.
+- **Spring overshoots forever**: decrease `SPRING_DAMP` or increase `SPRING_K`.
+- **Tilt too aggressive**: reduce the `0.35` multiplier in `applyTransform`.
+- **Sticky snap fires too eagerly**: increase `SNAP_DIST`.

@@ -1,0 +1,926 @@
+---
+---
+
+<div id="desktop">
+  <div id="canvas-area"></div>
+</div>
+
+<!-- Toolbar -->
+<div id="toolbar" style="
+  position:fixed;top:64px;right:16px;
+  font-family:monospace;font-size:11px;
+  color:rgba(255,255,255,0.8);
+  background:rgba(0,0,0,0.72);
+  border:1px solid rgba(255,255,255,0.14);
+  border-radius:4px;
+  padding:10px 12px;
+  display:flex;flex-direction:column;gap:7px;
+  min-width:158px;z-index:9100;user-select:none;
+">
+  <div style="font-size:10px;letter-spacing:0.1em;color:rgba(255,255,255,0.4);margin-bottom:2px;">WINDOW MANAGER</div>
+
+  <button id="btn-close-all" style="background:transparent;border:1px solid rgba(255,255,255,0.3);color:rgba(255,255,255,0.7);font-family:monospace;font-size:10px;padding:5px 8px;cursor:pointer;letter-spacing:0.08em;text-align:left;">CLOSE ALL [C]</button>
+  <button id="btn-restart"   style="background:transparent;border:1px solid rgba(255,255,255,0.3);color:rgba(255,255,255,0.7);font-family:monospace;font-size:10px;padding:5px 8px;cursor:pointer;letter-spacing:0.08em;text-align:left;">RESTART [R]</button>
+  <button id="btn-reposition" style="background:transparent;border:1px solid rgba(255,255,255,0.3);color:rgba(255,255,255,0.7);font-family:monospace;font-size:10px;padding:5px 8px;cursor:pointer;letter-spacing:0.08em;text-align:left;">REPOSITION [P]</button>
+
+  <div style="border-top:1px solid rgba(255,255,255,0.1);margin:2px 0;"></div>
+
+  <label style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;gap:10px;">
+    <span>STICKY</span>
+    <input type="checkbox" id="toggle-sticky" style="accent-color:rgba(255,255,255,0.6);">
+  </label>
+  <label style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;gap:10px;">
+    <span>CONTAIN</span>
+    <input type="checkbox" id="toggle-contain" checked style="accent-color:rgba(255,255,255,0.6);">
+  </label>
+
+  <div style="border-top:1px solid rgba(255,255,255,0.1);margin:2px 0;"></div>
+
+  <div style="display:flex;flex-direction:column;gap:3px;">
+    <span style="color:rgba(255,255,255,0.4);">CANVAS</span>
+    <select id="sel-canvas" style="background:#111;border:1px solid rgba(255,255,255,0.2);color:rgba(255,255,255,0.8);font-family:monospace;font-size:10px;padding:3px 5px;cursor:pointer;">
+      <option value="viewport" selected>Viewport</option>
+      <option value="infinite-y">Infinite ↕</option>
+      <option value="infinite-x">Infinite ↔</option>
+      <option value="infinite">Infinite ↕↔</option>
+    </select>
+  </div>
+</div>
+
+<style is:global>
+  html, body { margin:0; padding:0; overflow:hidden; width:100%; height:100%; }
+
+  #desktop {
+    position: fixed; top:0; left:0; width:100%; height:100%;
+    overflow: hidden;
+  }
+
+  #canvas-area {
+    position: absolute; top:0; left:0;
+    width: 100%; height: 100%;
+    background: #111;
+    background-image: radial-gradient(rgba(255,255,255,0.04) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+
+  .wm-win {
+    position: absolute; left:0; top:0;
+    background: #1e1e1e;
+    border: 1px solid rgba(255,255,255,0.13);
+    border-radius: 8px;
+    box-shadow: 0 6px 28px rgba(0,0,0,0.55);
+    overflow: hidden;
+    transform-origin: 50% 0%;
+    will-change: transform;
+    transition: box-shadow 0.15s;
+  }
+
+  .wm-win.is-dragging {
+    box-shadow: 0 18px 60px rgba(0,0,0,0.75);
+  }
+
+  .wm-titlebar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 10px;
+    height: 32px; min-height: 32px;
+    background: #2a2a2a;
+    border-bottom: 1px solid rgba(255,255,255,0.09);
+    cursor: grab;
+    user-select: none;
+  }
+  .wm-titlebar:active { cursor: grabbing; }
+
+  .wm-title {
+    font-family: monospace; font-size: 11px;
+    color: rgba(255,255,255,0.75);
+    letter-spacing: 0.04em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1; min-width: 0;
+  }
+
+  .wm-btns { display:flex; gap:5px; flex-shrink:0; margin-left:8px; }
+
+  .wm-btn {
+    width: 12px; height: 12px;
+    border-radius: 50%; border: none; cursor: pointer;
+    opacity: 0.85; transition: opacity 0.1s, transform 0.1s;
+    padding: 0;
+  }
+  .wm-btn:hover { opacity: 1; transform: scale(1.15); }
+  .wm-btn-min  { background: #febc2e; }
+  .wm-btn-close { background: #ff5f57; }
+
+  .wm-body {
+    overflow: hidden;
+    font-family: monospace; font-size: 13px;
+    color: rgba(255,255,255,0.82);
+    line-height: 1.6;
+    transition: max-height 0.28s cubic-bezier(0.4,0,0.2,1), opacity 0.2s;
+  }
+
+  .wm-body.is-scrollable { overflow-y: auto; }
+
+  .wm-body::-webkit-scrollbar { width: 5px; }
+  .wm-body::-webkit-scrollbar-track { background: rgba(255,255,255,0.04); }
+  .wm-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 3px; }
+
+  /* Markdown content */
+  .md-cnt { padding: 12px 14px; }
+  .md-cnt h1 { font-size: 15px; margin: 0 0 8px; color:#fff; }
+  .md-cnt h2 { font-size: 13px; margin: 10px 0 5px; color:rgba(255,255,255,0.8); }
+  .md-cnt h3 { font-size: 11px; margin: 8px 0 4px; color:rgba(255,255,255,0.6); text-transform:uppercase; letter-spacing:.05em; }
+  .md-cnt p  { margin: 0 0 8px; }
+  .md-cnt ul { margin: 0 0 8px; padding-left:16px; }
+  .md-cnt li { margin-bottom: 3px; }
+  .md-cnt code { background:rgba(255,255,255,0.1); padding:1px 5px; border-radius:3px; font-size:11px; }
+  .md-cnt strong { color:#fff; }
+  .md-cnt em { color:rgba(255,255,255,0.55); font-style:italic; }
+  .md-cnt blockquote { border-left:2px solid rgba(255,255,255,0.2); margin:0 0 8px 4px; padding-left:10px; color:rgba(255,255,255,0.5); }
+  .md-cnt a { color:#77ddff; }
+  .md-cnt hr { border:none; border-top:1px solid rgba(255,255,255,0.12); margin:10px 0; }
+
+  /* Drop zone overlay */
+  .drop-overlay {
+    position:absolute; top:0; left:0; right:0; bottom:0;
+    pointer-events:none; z-index:9600; border-radius:8px; overflow:hidden;
+  }
+  .drop-zone-hl {
+    position:absolute;
+    background:rgba(100,180,255,0.22);
+    border:2px solid rgba(100,180,255,0.75);
+    box-sizing:border-box;
+    border-radius:4px;
+  }
+  .drop-zone-hl.center {
+    background:rgba(255,180,80,0.12);
+    border-color:rgba(255,180,80,0.6);
+    border-style:dashed;
+  }
+</style>
+
+<script>
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type ContentSpec =
+  | { type: 'image'; src: string; alt?: string }
+  | { type: 'markdown'; text: string }
+  | { type: 'html'; html: string };
+
+interface WindowConfig {
+  id: string;
+  title?: string;
+  width?: number;
+  height?: number; // fixed body height → scroll; omit for auto
+  position: { x: number; y: number };
+  showClose?: boolean;
+  showMinimize?: boolean;
+  content: ContentSpec;
+}
+
+interface Win {
+  id: string;
+  cfg: WindowConfig;
+  x: number; y: number;
+  origX: number; origY: number;
+  vx: number; vy: number;
+  // spring target (null = free momentum)
+  tx: number | null; ty: number | null;
+  dragging: boolean;
+  minimized: boolean;
+  closed: boolean;
+  z: number;
+  el: HTMLElement;
+  body: HTMLElement;
+}
+
+interface ManagerState {
+  sticky: boolean;
+  contain: boolean;
+  canvasMode: 'viewport' | 'infinite-y' | 'infinite-x' | 'infinite';
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const NAV_H       = 40;
+const OUTER_GUTTER = 16;
+const SNAP_DIST   = 18;
+const MOMENTUM_DECAY = 0.88;
+const SPRING_K    = 0.13;
+const SPRING_DAMP = 0.70;
+const MAX_TILT    = 7; // degrees
+
+// ─── State ────────────────────────────────────────────────────────────────────
+
+const wins = new Map<string, Win>();
+let baseZ = 200;
+
+let drag: {
+  id: string;
+  ox: number; oy: number; // win position at drag start
+  mx0: number; my0: number; // mouse at drag start
+  pmx: number; pmy: number; // prev mouse (for velocity)
+  ivx: number; ivy: number;
+} | null = null;
+
+let dropTarget: { win: Win; zone: 'left'|'right'|'top'|'bottom'|'center' } | null = null;
+
+const ms: ManagerState = { sticky: false, contain: true, canvasMode: 'viewport' };
+
+// ─── DOM refs ─────────────────────────────────────────────────────────────────
+
+const desktop   = document.getElementById('desktop')!   as HTMLElement;
+const canvasArea = document.getElementById('canvas-area')! as HTMLElement;
+
+// ─── Markdown ─────────────────────────────────────────────────────────────────
+
+function esc(s: string) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function inlineFmt(s: string): string {
+  return esc(s)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,     '<em>$1</em>')
+    .replace(/`(.+?)`/g,       '<code>$1</code>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+
+function parseMd(text: string): string {
+  const out: string[] = [];
+  let inList = false;
+
+  for (const line of text.split('\n')) {
+    if      (line.startsWith('### ')) { if(inList){out.push('</ul>');inList=false;} out.push(`<h3>${inlineFmt(line.slice(4))}</h3>`); }
+    else if (line.startsWith('## '))  { if(inList){out.push('</ul>');inList=false;} out.push(`<h2>${inlineFmt(line.slice(3))}</h2>`); }
+    else if (line.startsWith('# '))   { if(inList){out.push('</ul>');inList=false;} out.push(`<h1>${inlineFmt(line.slice(2))}</h1>`); }
+    else if (line === '---' || line === '***') { out.push('<hr>'); }
+    else if (line.startsWith('> '))   { if(inList){out.push('</ul>');inList=false;} out.push(`<blockquote>${inlineFmt(line.slice(2))}</blockquote>`); }
+    else if (/^[-*] /.test(line))     { if(!inList){out.push('<ul>');inList=true;} out.push(`<li>${inlineFmt(line.slice(2))}</li>`); }
+    else if (line.trim()==='')        { if(inList){out.push('</ul>');inList=false;} }
+    else                              { if(inList){out.push('</ul>');inList=false;} out.push(`<p>${inlineFmt(line)}</p>`); }
+  }
+  if (inList) out.push('</ul>');
+  return out.join('');
+}
+
+// ─── Window factory ───────────────────────────────────────────────────────────
+
+function makeWin(cfg: WindowConfig): Win {
+  const width     = cfg.width ?? 320;
+  const showClose = cfg.showClose !== false;
+  const showMin   = cfg.showMinimize !== false;
+
+  const el = document.createElement('div');
+  el.className = 'wm-win';
+  el.id = `wm-${cfg.id}`;
+  el.style.width    = `${Math.min(width, window.innerWidth - OUTER_GUTTER * 2)}px`;
+  el.style.maxWidth = `calc(100vw - ${OUTER_GUTTER * 2}px)`;
+  el.style.zIndex   = String(baseZ);
+
+  // Titlebar
+  const tb = document.createElement('div');
+  tb.className = 'wm-titlebar';
+
+  const titleEl = document.createElement('span');
+  titleEl.className = 'wm-title';
+  titleEl.textContent = cfg.title ?? '';
+
+  const btns = document.createElement('div');
+  btns.className = 'wm-btns';
+
+  if (showMin) {
+    const mb = document.createElement('button');
+    mb.className = 'wm-btn wm-btn-min';
+    mb.title = 'Minimize';
+    btns.appendChild(mb);
+  }
+  if (showClose) {
+    const cb = document.createElement('button');
+    cb.className = 'wm-btn wm-btn-close';
+    cb.title = 'Close';
+    btns.appendChild(cb);
+  }
+
+  tb.appendChild(titleEl);
+  tb.appendChild(btns);
+
+  // Body
+  const body = document.createElement('div');
+  body.className = 'wm-body';
+  if (cfg.height) {
+    body.style.height     = `${cfg.height}px`;
+    body.style.maxHeight  = `${cfg.height}px`;
+    body.classList.add('is-scrollable');
+  }
+
+  // Content
+  switch (cfg.content.type) {
+    case 'image': {
+      const img = document.createElement('img');
+      img.src = cfg.content.src;
+      img.alt = cfg.content.alt ?? '';
+      img.style.cssText = 'display:block;width:100%;height:auto;';
+      body.appendChild(img);
+      break;
+    }
+    case 'markdown': {
+      const d = document.createElement('div');
+      d.className = 'md-cnt';
+      d.innerHTML = parseMd(cfg.content.text);
+      body.appendChild(d);
+      break;
+    }
+    case 'html': {
+      const d = document.createElement('div');
+      d.innerHTML = cfg.content.html;
+      body.appendChild(d);
+      // innerHTML doesn't execute <script> tags — re-inject them
+      d.querySelectorAll('script').forEach(s => {
+        const script = document.createElement('script');
+        script.textContent = s.textContent;
+        document.head.appendChild(script);
+        script.remove();
+      });
+      break;
+    }
+  }
+
+  el.appendChild(tb);
+  el.appendChild(body);
+  canvasArea.appendChild(el);
+
+  const win: Win = {
+    id: cfg.id, cfg,
+    x: cfg.position.x, y: cfg.position.y,
+    origX: cfg.position.x, origY: cfg.position.y,
+    vx: 0, vy: 0, tx: null, ty: null,
+    dragging: false, minimized: false, closed: false,
+    z: baseZ++, el, body,
+  };
+
+  applyTransform(win);
+
+  // Drag
+  tb.addEventListener('pointerdown', (e) => {
+    if ((e.target as HTMLElement).closest('.wm-btns')) return;
+    e.preventDefault();
+    tb.setPointerCapture(e.pointerId);
+    front(win);
+    win.dragging = true;
+    win.tx = null; win.ty = null;
+    win.vx = 0;    win.vy = 0;
+    win.el.classList.add('is-dragging');
+    drag = { id: win.id, ox: win.x, oy: win.y, mx0: e.clientX, my0: e.clientY, pmx: e.clientX, pmy: e.clientY, ivx: 0, ivy: 0 };
+  });
+
+  // Buttons
+  btns.querySelector('.wm-btn-close')?.addEventListener('click', () => closeWin(win));
+  btns.querySelector('.wm-btn-min')?.addEventListener('click',   () => toggleMin(win));
+
+  // Front on click
+  el.addEventListener('pointerdown', () => front(win));
+
+  wins.set(cfg.id, win);
+  return win;
+}
+
+function applyTransform(win: Win) {
+  const tilt = win.dragging
+    ? Math.max(-MAX_TILT, Math.min(MAX_TILT, win.vx * 0.35))
+    : win.vx * 0.10;
+  const scale = win.dragging ? 1.03 : 1.0;
+  win.el.style.transform = `translate(${win.x.toFixed(1)}px,${win.y.toFixed(1)}px) rotate(${tilt.toFixed(2)}deg) scale(${scale.toFixed(3)})`;
+}
+
+function front(win: Win) {
+  win.z = baseZ++;
+  win.el.style.zIndex = String(win.z);
+}
+
+function closeWin(win: Win) {
+  if (win.closed) return;
+  win.closed = true;
+  win.el.style.transition = 'transform 0.18s ease-in, opacity 0.18s ease-in';
+  win.el.style.opacity    = '0';
+  win.el.style.transform  = `translate(${win.x}px,${win.y}px) scale(0.82)`;
+  setTimeout(() => win.el.remove(), 200);
+}
+
+function toggleMin(win: Win) {
+  win.minimized = !win.minimized;
+  if (win.minimized) {
+    win.body.style.transition = 'max-height 0.26s ease, opacity 0.18s ease';
+    win.body.style.overflow   = 'hidden';
+    win.body.style.maxHeight  = '0';
+    win.body.style.opacity    = '0';
+  } else {
+    win.body.style.transition = 'max-height 0.3s ease, opacity 0.22s ease';
+    win.body.style.maxHeight  = win.cfg.height ? `${win.cfg.height}px` : '3000px';
+    win.body.style.opacity    = '1';
+    if (win.cfg.height) win.body.classList.add('is-scrollable');
+  }
+}
+
+// ─── Drag events ──────────────────────────────────────────────────────────────
+
+window.addEventListener('pointermove', (e: PointerEvent) => {
+  if (!drag) return;
+  const win = wins.get(drag.id);
+  if (!win || !win.dragging) return;
+
+  drag.ivx = e.clientX - drag.pmx;
+  drag.ivy = e.clientY - drag.pmy;
+  drag.pmx = e.clientX;
+  drag.pmy = e.clientY;
+
+  win.x = drag.ox + (e.clientX - drag.mx0);
+  win.y = drag.oy + (e.clientY - drag.my0);
+  win.vx = drag.ivx;
+  win.vy = drag.ivy;
+
+  applyTransform(win);
+  updateDropOverlay(win, e.clientX, e.clientY);
+});
+
+window.addEventListener('pointerup', (_e: PointerEvent) => {
+  if (!drag) return;
+  const win = wins.get(drag.id);
+  if (!win) { drag = null; return; }
+
+  win.dragging = false;
+  win.el.classList.remove('is-dragging');
+
+  const hit = dropTarget;
+  clearDropOverlay();
+  drag = null;
+
+  if (hit && hit.zone !== 'center') {
+    applyTileDrop(win, hit.win, hit.zone);
+  } else if (ms.sticky) {
+    applyStickySnap(win);
+  }
+});
+
+window.addEventListener('pointercancel', () => {
+  if (!drag) return;
+  const win = wins.get(drag.id);
+  if (win) { win.dragging = false; win.el.classList.remove('is-dragging'); }
+  clearDropOverlay();
+  drag = null;
+});
+
+// ─── Drop zone overlay ────────────────────────────────────────────────────────
+
+function updateDropOverlay(dragging: Win, mx: number, my: number) {
+  clearDropOverlay();
+
+  for (const [id, win] of wins) {
+    if (id === dragging.id || win.closed || win.minimized) continue;
+    const rect = win.el.getBoundingClientRect();
+    if (mx < rect.left || mx > rect.right || my < rect.top || my > rect.bottom) continue;
+
+    const rx = (mx - rect.left) / rect.width;
+    const ry = (my - rect.top)  / rect.height;
+
+    let zone: 'left'|'right'|'top'|'bottom'|'center';
+    if      (rx < 0.25) zone = 'left';
+    else if (rx > 0.75) zone = 'right';
+    else if (ry < 0.25) zone = 'top';
+    else if (ry > 0.75) zone = 'bottom';
+    else                zone = 'center';
+
+    showZone(win, zone);
+    dropTarget = { win, zone };
+    break;
+  }
+}
+
+function showZone(win: Win, zone: string) {
+  const overlay = document.createElement('div');
+  overlay.className = 'drop-overlay';
+  overlay.id = 'drop-overlay';
+
+  const hl = document.createElement('div');
+  hl.className = zone === 'center' ? 'drop-zone-hl center' : 'drop-zone-hl';
+
+  switch (zone) {
+    case 'left':   hl.style.cssText = 'top:0;left:0;width:50%;height:100%;'; break;
+    case 'right':  hl.style.cssText = 'top:0;right:0;width:50%;height:100%;'; break;
+    case 'top':    hl.style.cssText = 'top:0;left:0;right:0;height:50%;'; break;
+    case 'bottom': hl.style.cssText = 'bottom:0;left:0;right:0;height:50%;'; break;
+    case 'center': hl.style.cssText = 'top:10%;left:10%;right:10%;bottom:10%;'; break;
+  }
+
+  overlay.appendChild(hl);
+  win.el.appendChild(overlay);
+}
+
+function clearDropOverlay() {
+  document.getElementById('drop-overlay')?.remove();
+  dropTarget = null;
+}
+
+// ─── Tile drop ────────────────────────────────────────────────────────────────
+
+function applyTileDrop(dragging: Win, target: Win, zone: string) {
+  const tw = target.el.offsetWidth;
+  const th = target.el.offsetHeight;
+  const dw = dragging.el.offsetWidth;
+  const dh = dragging.el.offsetHeight;
+
+  let nx = dragging.x, ny = dragging.y;
+  switch (zone) {
+    case 'left':   nx = target.x - dw - 4;  ny = target.y; break;
+    case 'right':  nx = target.x + tw + 4;   ny = target.y; break;
+    case 'top':    nx = target.x; ny = target.y - dh - 4;  break;
+    case 'bottom': nx = target.x; ny = target.y + th + 4;  break;
+  }
+
+  dragging.vx = 0; dragging.vy = 0;
+  dragging.tx = nx; dragging.ty = ny;
+}
+
+// ─── Sticky snap ──────────────────────────────────────────────────────────────
+
+function winRect(w: Win) {
+  return { l: w.x, t: w.y, r: w.x + w.el.offsetWidth, b: w.y + w.el.offsetHeight };
+}
+
+function applyStickySnap(win: Win) {
+  const r = winRect(win);
+  for (const [id, other] of wins) {
+    if (id === win.id || other.closed) continue;
+    const o = winRect(other);
+    const overlapY = r.t < o.b && r.b > o.t;
+    const overlapX = r.l < o.r && r.r > o.l;
+
+    if (overlapY) {
+      if (Math.abs(r.r - o.l) < SNAP_DIST) { win.tx = o.l - (r.r - r.l); win.ty = win.y; return; }
+      if (Math.abs(r.l - o.r) < SNAP_DIST) { win.tx = o.r;              win.ty = win.y; return; }
+    }
+    if (overlapX) {
+      if (Math.abs(r.b - o.t) < SNAP_DIST) { win.tx = win.x; win.ty = o.t - (r.b - r.t); return; }
+      if (Math.abs(r.t - o.b) < SNAP_DIST) { win.tx = win.x; win.ty = o.b;              return; }
+    }
+  }
+}
+
+// ─── Physics loop ─────────────────────────────────────────────────────────────
+
+function tick() {
+  for (const [, win] of wins) {
+    if (win.closed || win.dragging) continue;
+
+    if (win.tx !== null && win.ty !== null) {
+      // Spring toward target
+      const dx = win.tx - win.x, dy = win.ty - win.y;
+      win.vx = win.vx * SPRING_DAMP + dx * SPRING_K;
+      win.vy = win.vy * SPRING_DAMP + dy * SPRING_K;
+      win.x += win.vx;
+      win.y += win.vy;
+
+      if (Math.abs(win.vx) < 0.12 && Math.abs(win.vy) < 0.12 && Math.hypot(dx, dy) < 0.4) {
+        win.x = win.tx; win.y = win.ty;
+        win.vx = 0; win.vy = 0;
+        win.tx = null; win.ty = null;
+      }
+    } else {
+      // Momentum
+      win.vx *= MOMENTUM_DECAY;
+      win.vy *= MOMENTUM_DECAY;
+      win.x += win.vx;
+      win.y += win.vy;
+
+      if (ms.contain) {
+        const vw = window.innerWidth, vh = window.innerHeight;
+        const w = win.el.offsetWidth, h = win.el.offsetHeight;
+        if (win.x < 0)           { win.x = 0;           win.vx *= -0.45; }
+        if (win.x + w > vw)      { win.x = vw - w;      win.vx *= -0.45; }
+        if (win.y < NAV_H)       { win.y = NAV_H;        win.vy *= -0.45; }
+        if (win.y + h > vh)      { win.y = vh - h;       win.vy *= -0.45; }
+      }
+    }
+
+    applyTransform(win);
+  }
+
+  requestAnimationFrame(tick);
+}
+
+// ─── Toolbar actions ──────────────────────────────────────────────────────────
+
+function closeAll() {
+  for (const [, win] of wins) if (!win.closed) closeWin(win);
+}
+
+function restart() {
+  for (const [, win] of wins) win.el.remove();
+  wins.clear();
+  baseZ = 200;
+  spawnExamples();
+}
+
+function reposition() {
+  for (const [, win] of wins) {
+    if (win.closed) continue;
+    win.vx = (Math.random() - 0.5) * 5;
+    win.vy = (Math.random() - 0.5) * 5;
+    win.tx = win.origX;
+    win.ty = win.origY;
+  }
+}
+
+// ─── Canvas mode ──────────────────────────────────────────────────────────────
+
+function applyCanvasMode() {
+  switch (ms.canvasMode) {
+    case 'viewport':
+      desktop.style.overflow = 'hidden';
+      canvasArea.style.width  = '100%';
+      canvasArea.style.height = '100%';
+      break;
+    case 'infinite-y':
+      desktop.style.overflowX = 'hidden';
+      desktop.style.overflowY = 'auto';
+      canvasArea.style.width  = '100%';
+      canvasArea.style.height = '6000px';
+      break;
+    case 'infinite-x':
+      desktop.style.overflowX = 'auto';
+      desktop.style.overflowY = 'hidden';
+      canvasArea.style.width  = '6000px';
+      canvasArea.style.height = '100%';
+      break;
+    case 'infinite':
+      desktop.style.overflow  = 'auto';
+      canvasArea.style.width  = '6000px';
+      canvasArea.style.height = '6000px';
+      break;
+  }
+}
+
+// ─── Resize ───────────────────────────────────────────────────────────────────
+
+let prevW = window.innerWidth, prevH = window.innerHeight;
+
+window.addEventListener('resize', () => {
+  const sx = window.innerWidth  / prevW;
+  const sy = window.innerHeight / prevH;
+  prevW = window.innerWidth; prevH = window.innerHeight;
+
+  for (const [, win] of wins) {
+    if (win.closed) continue;
+    win.x *= sx; win.y *= sy;
+    win.origX *= sx; win.origY *= sy;
+    applyTransform(win);
+  }
+});
+
+// ─── UI wiring ────────────────────────────────────────────────────────────────
+
+document.getElementById('btn-close-all')! .addEventListener('click', closeAll);
+document.getElementById('btn-restart')!   .addEventListener('click', restart);
+document.getElementById('btn-reposition')!.addEventListener('click', reposition);
+
+const toggleSticky  = document.getElementById('toggle-sticky')!  as HTMLInputElement;
+const toggleContain = document.getElementById('toggle-contain')!  as HTMLInputElement;
+const selCanvas     = document.getElementById('sel-canvas')!      as HTMLSelectElement;
+
+toggleSticky .addEventListener('change', () => { ms.sticky  = toggleSticky.checked; });
+toggleContain.addEventListener('change', () => { ms.contain = toggleContain.checked; });
+selCanvas    .addEventListener('change', () => {
+  ms.canvasMode = selCanvas.value as typeof ms.canvasMode;
+  applyCanvasMode();
+});
+
+// Keyboard shortcuts
+window.addEventListener('keydown', (e) => {
+  if ((e.target as HTMLElement).tagName === 'INPUT') return;
+  if (e.key === 'c' || e.key === 'C') closeAll();
+  if (e.key === 'r' || e.key === 'R') restart();
+  if (e.key === 'p' || e.key === 'P') reposition();
+});
+
+// Prevent toolbar pointer events from leaking
+document.getElementById('toolbar')!.addEventListener('pointerdown', e => e.stopPropagation());
+
+// ─── Example windows ──────────────────────────────────────────────────────────
+
+function genPattern(w: number, h: number): string {
+  const id = `pat-${Math.random().toString(36).slice(2,7)}`;
+  return `<canvas id="${id}" width="${w}" height="${h}" style="display:block;width:100%;height:auto;"></canvas>
+<script>
+(function(){
+  const c = document.getElementById('${id}');
+  if(!c) return;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle='#111';
+  ctx.fillRect(0,0,${w},${h});
+  const cols=${Math.round(w/20)}, rows=${Math.round(h/20)};
+  const cw=${w}/cols, ch=${h}/rows;
+  for(let y=0;y<rows;y++) for(let x=0;x<cols;x++){
+    const hue=(x/cols*300+y/rows*80)%360;
+    ctx.fillStyle='hsl('+hue+','+(50+Math.random()*40)+'%,'+(25+Math.random()*35)+'%)';
+    const r=Math.random();
+    if(r<0.45){ctx.fillRect(x*cw+2,y*ch+2,cw-4,ch-4);}
+    else if(r<0.72){ctx.beginPath();ctx.arc(x*cw+cw/2,y*ch+ch/2,Math.min(cw,ch)/2-2,0,Math.PI*2);ctx.fill();}
+    else{ctx.beginPath();ctx.moveTo(x*cw+cw/2,y*ch+2);ctx.lineTo(x*cw+cw-2,y*ch+ch-2);ctx.lineTo(x*cw+2,y*ch+ch-2);ctx.closePath();ctx.fill();}
+  }
+})();
+<\/script>`;
+}
+
+function genParticles(w: number, h: number): string {
+  const id = `par-${Math.random().toString(36).slice(2,7)}`;
+  return `<canvas id="${id}" width="${w}" height="${h}" style="display:block;width:100%;height:auto;"></canvas>
+<script>
+(function(){
+  const c = document.getElementById('${id}');
+  if(!c) return;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle='#080810';
+  ctx.fillRect(0,0,${w},${h});
+  const pts=Array.from({length:180},()=>({x:Math.random()*${w},y:Math.random()*${h},s:Math.random()*2.5+0.4,h:Math.random()*60+200}));
+  ctx.lineWidth=0.5;
+  for(let i=0;i<pts.length;i++){
+    for(let j=i+1;j<pts.length;j++){
+      const dx=pts[i].x-pts[j].x,dy=pts[i].y-pts[j].y,d=Math.sqrt(dx*dx+dy*dy);
+      if(d<45){ctx.strokeStyle='rgba(140,90,255,'+(1-d/45)*0.18+')';ctx.beginPath();ctx.moveTo(pts[i].x,pts[i].y);ctx.lineTo(pts[j].x,pts[j].y);ctx.stroke();}
+    }
+    ctx.beginPath();ctx.arc(pts[i].x,pts[i].y,pts[i].s,0,Math.PI*2);
+    ctx.fillStyle='hsla('+pts[i].h+',75%,70%,'+(0.4+Math.random()*0.5)+')';
+    ctx.fill();
+  }
+})();
+<\/script>`;
+}
+
+function genSvgLandscape(): string {
+  const sky1 = '#0d1b2a', sky2 = '#1b3a5c';
+  const moon = '#febc2e';
+  const mid  = '#0f3460';
+  const fore = '#16213e';
+  return `<svg viewBox="0 0 300 180" xmlns="http://www.w3.org/2000/svg" style="display:block;width:100%;height:auto;">
+    <defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${sky1}"/><stop offset="100%" stop-color="${sky2}"/></linearGradient></defs>
+    <rect width="300" height="180" fill="url(#sky)"/>
+    <circle cx="240" cy="44" r="24" fill="${moon}" opacity="0.9"/>
+    <circle cx="240" cy="44" r="24" fill="#102040" opacity="0.15"/>
+    ${Array.from({length:28},(_,i)=>{const x=i*11+3,h=22+Math.sin(i*1.7)*14+Math.random()*10;return `<rect x="${x}" y="${130-h}" width="8" height="${h}" fill="${mid}" opacity="0.9"/>`;}).join('')}
+    <path d="M0,148 Q75,118 150,138 Q225,158 300,128 L300,180 L0,180Z" fill="${fore}"/>
+    <path d="M0,162 Q80,148 160,155 Q230,162 300,150 L300,180 L0,180Z" fill="#0a111e"/>
+    ${Array.from({length:40},()=>{const x=Math.random()*300,y=Math.random()*80+10,r=Math.random()*0.9+0.2;return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="white" opacity="${(0.3+Math.random()*0.7).toFixed(2)}"/>`;}).join('')}
+  </svg>`;
+}
+
+function genPalette(): string {
+  const palettes = [
+    ['#ff6b6b','#feca57','#48dbfb','#ff9ff3','#54a0ff'],
+    ['#e94560','#533483','#0f3460','#16213e','#1a1a2e'],
+    ['#2ecc71','#3498db','#e74c3c','#f39c12','#9b59b6'],
+    ['#00b894','#00cec9','#0984e3','#6c5ce7','#fd79a8'],
+  ];
+  const p = palettes[Math.floor(Math.random() * palettes.length)];
+  return `<div style="display:flex;flex-direction:column;">
+    ${p.map(c=>`<div style="height:38px;background:${c};display:flex;align-items:center;padding:0 10px;">
+      <span style="font-family:monospace;font-size:10px;color:rgba(0,0,0,0.55);letter-spacing:.05em;">${c}</span>
+    </div>`).join('')}
+  </div>`;
+}
+
+function spawnExamples() {
+  const vw = window.innerWidth;
+  const col1 = Math.round(vw * 0.04) + 60;
+  const col2 = Math.round(vw * 0.32) + 60;
+  const col3 = Math.round(vw * 0.60) + 60;
+  const row1 = NAV_H + 60;
+  const row2 = NAV_H + 260;
+  const row3 = NAV_H + 460;
+
+  makeWin({
+    id: 'welcome',
+    title: 'Window Manager',
+    width: 300,
+    position: { x: col1, y: row1 },
+    content: {
+      type: 'markdown',
+      text: `# Physics WM\n\nA **DOM window manager** with spring physics.\n\n## Interactions\n\n- Drag titlebars to move windows\n- Drop onto a window **edge** to tile it\n- Drop onto the **center** to overlap\n\n## Controls\n\n\`C\` close all  \`R\` restart  \`P\` reposition\n\n## Toggles\n\n- **Sticky** — windows snap side-by-side\n- **Contain** — keeps windows inside viewport\n- **Canvas mode** — enables infinite scrolling`,
+    },
+  });
+
+  makeWin({
+    id: 'landscape',
+    title: 'Night Landscape',
+    width: 300,
+    position: { x: col2, y: row1 },
+    content: { type: 'html', html: genSvgLandscape() },
+  });
+
+  makeWin({
+    id: 'pattern',
+    title: 'Generative Grid',
+    width: 280,
+    position: { x: col3, y: row1 },
+    content: { type: 'html', html: genPattern(280, 180) },
+  });
+
+  makeWin({
+    id: 'notes',
+    title: 'Notes',
+    width: 240,
+    height: 130,
+    position: { x: col1, y: row2 },
+    content: {
+      type: 'markdown',
+      text: `> Drag a window onto the **left or right edge** of another to tile them horizontally.\n\n> Drag onto **top or bottom** to stack vertically.\n\n> The **center zone** lets you overlap without tiling.`,
+    },
+  });
+
+  makeWin({
+    id: 'particles',
+    title: 'Particle Field',
+    width: 280,
+    position: { x: col2, y: row2 },
+    content: { type: 'html', html: genParticles(280, 200) },
+  });
+
+  makeWin({
+    id: 'palette',
+    title: 'Palette',
+    width: 180,
+    position: { x: col3, y: row2 },
+    showMinimize: false,
+    content: { type: 'html', html: genPalette() },
+  });
+
+  makeWin({
+    id: 'info',
+    title: 'System',
+    width: 200,
+    height: 120,
+    position: { x: col1, y: row3 },
+    showClose: false,
+    content: {
+      type: 'html',
+      html: `<div style="padding:12px;font-family:monospace;font-size:11px;color:rgba(255,255,255,0.65);line-height:2.1;">
+        <div><span style="color:#555">viewport </span><span id="si-vp">${window.innerWidth}×${window.innerHeight}</span></div>
+        <div><span style="color:#555">windows  </span><span id="si-wc">0</span></div>
+        <div><span style="color:#555">canvas   </span><span id="si-cm">viewport</span></div>
+        <div><span style="color:#555">sticky   </span><span id="si-st">off</span></div>
+        <div><span style="color:#555">contain  </span><span id="si-co">on</span></div>
+      </div>`,
+    },
+  });
+
+  makeWin({
+    id: 'code',
+    title: 'spring.ts',
+    width: 280,
+    height: 160,
+    position: { x: col2, y: row3 },
+    content: {
+      type: 'html',
+      html: `<pre style="margin:0;padding:12px;font-size:11px;line-height:1.7;color:rgba(255,255,255,0.75);overflow:auto;"><code><span style="color:#569cd6">function</span> <span style="color:#dcdcaa">tick</span>() {
+  <span style="color:#c8c8c8">const</span> dx = tx - x, dy = ty - y;
+  vx = vx * <span style="color:#b5cea8">0.70</span> + dx * <span style="color:#b5cea8">0.13</span>;
+  vy = vy * <span style="color:#b5cea8">0.70</span> + dy * <span style="color:#b5cea8">0.13</span>;
+  x += vx; y += vy;
+  <span style="color:#6a9955">// apply tilt from velocity</span>
+  el.style.transform =
+    <span style="color:#ce9178">\`translate(\${x}px,\${y}px)</span>
+    <span style="color:#ce9178">rotate(\${vx * 0.35}deg)\`</span>;
+  requestAnimationFrame(tick);
+}</code></pre>`,
+    },
+  });
+
+  makeWin({
+    id: 'pattern2',
+    title: 'Abstract',
+    width: 200,
+    position: { x: col3, y: row3 },
+    content: { type: 'html', html: genPattern(200, 200) },
+  });
+
+  // Live info updater
+  function updateInfo() {
+    const vp = document.getElementById('si-vp');
+    const wc = document.getElementById('si-wc');
+    const cm = document.getElementById('si-cm');
+    const st = document.getElementById('si-st');
+    const co = document.getElementById('si-co');
+    if (vp) vp.textContent = `${window.innerWidth}×${window.innerHeight}`;
+    if (wc) wc.textContent = String([...wins.values()].filter(w => !w.closed).length);
+    if (cm) cm.textContent = ms.canvasMode;
+    if (st) st.textContent = ms.sticky  ? 'on' : 'off';
+    if (co) co.textContent = ms.contain ? 'on' : 'off';
+    setTimeout(updateInfo, 400);
+  }
+  setTimeout(updateInfo, 200);
+}
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+
+applyCanvasMode();
+spawnExamples();
+requestAnimationFrame(tick);
+</script>
