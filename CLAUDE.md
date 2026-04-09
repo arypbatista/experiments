@@ -185,12 +185,116 @@ Use `window.matchMedia('(pointer: coarse)').matches` to detect touch devices —
 
 ### In-experiment UI controls (overlays)
 
-When an experiment needs in-canvas controls (sliders, selects, buttons), overlay them with `position:absolute` inside the canvas wrapper. Conventions:
+When an experiment needs in-canvas controls (sliders, selects, buttons), overlay them with `position:fixed` — not `position:absolute`. Fixed positioning keeps controls anchored to the viewport regardless of scroll or canvas transforms.
 
-- **Top-right panel** (settings/presets): `top: 64px; right: 16px` — clears the back button and title overlay at the top.
-- **Bottom-right panel** (action buttons): `bottom: 24px; right: 24px`.
-- Style: monospace font, `background: rgba(0,0,0,0.55)`, `border: 1px solid rgba(255,255,255,0.15)`, white text, small padding.
-- On mobile, these panels may overlap scene content — either hide non-essential controls or reduce their size.
+**Panel positions:**
+
+- **Top-right** (parameter panel — sliders, selects, presets): `top: 64px; right: 24px` — clears the back button and title overlay.
+- **Bottom-right** (action buttons): `bottom: 24px; right: 24px`.
+
+**Action buttons** — transparent, bordered, monospace, ALL CAPS with keyboard shortcut in brackets:
+
+```html
+<div style="position:fixed;bottom:24px;right:24px;display:flex;gap:8px;">
+  <button
+    id="launch-btn"
+    style="background:transparent;border:1px solid rgba(255,255,255,0.4);color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >LAUNCH [L]</button>
+  <button
+    id="burn-btn"
+    style="background:transparent;border:1px solid rgba(255,255,0,0.5);color:rgba(255,255,0,0.8);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >BURN [B]</button>
+</div>
+```
+
+Use a tinted border/color to distinguish destructive or special actions (e.g. yellow for burn/boost). Always wire both the button click and the keyboard shortcut:
+
+```ts
+document.getElementById('launch-btn')!.addEventListener('click', launch);
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'l' || e.key === 'L') launch();
+});
+```
+
+**Parameter panel** — column of labeled sliders and selects:
+
+```html
+<div
+  id="controls"
+  style="position:fixed;top:64px;right:24px;font-family:monospace;font-size:11px;color:rgba(255,255,255,0.7);display:flex;flex-direction:column;gap:8px;min-width:200px;"
+>
+  <!-- Section header -->
+  <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:2px;">
+    <span style="font-size:12px;color:rgba(255,255,255,0.9);letter-spacing:0.06em;">SECTION TITLE</span>
+    <span style="font-size:10px;color:rgba(255,255,255,0.4);line-height:1.4;">one-line description of what these parameters control</span>
+  </div>
+
+  <!-- Preset select -->
+  <select
+    id="preset-select"
+    style="background:#000;border:1px solid rgba(255,255,255,0.3);color:rgba(255,255,255,0.8);font-family:monospace;font-size:11px;padding:4px 6px;cursor:pointer;width:100%;"
+  >
+    <option value="a">Preset A</option>
+    <option value="b" selected>Preset B</option>
+    <option value="custom">Custom</option>
+  </select>
+
+  <!-- Labeled slider (label shows live value) -->
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="speed-label">speed: 1.05</span>
+    <input id="speed-range" type="range" min="0.5" max="2" step="0.01" value="1.05"
+      style="accent-color:white;width:100%;" />
+  </label>
+</div>
+```
+
+**Slider value labels** always show the current value inline (e.g. `speed: 1.05`). Update the label on every `input` event:
+
+```ts
+const speedRange = document.getElementById('speed-range') as HTMLInputElement;
+const speedLabel = document.getElementById('speed-label')!;
+speedRange.addEventListener('input', () => {
+  myParam = parseFloat(speedRange.value);
+  speedLabel.textContent = `speed: ${myParam.toFixed(2)}`;
+  presetSelect.value = 'custom'; // switch to Custom when manually adjusted
+});
+```
+
+**Preset + custom pattern** — presets populate all slider values at once; any manual slider change switches the select to `"custom"`:
+
+```ts
+const PRESETS: Record<string, [number, number]> = {
+  a: [0.8, 10],
+  b: [1.05, 20],
+};
+
+function applyValues(speed: number, count: number) {
+  mySpeed = speed; myCount = count;
+  speedRange.value = speed.toFixed(2);
+  speedLabel.textContent = `speed: ${speed.toFixed(2)}`;
+  countRange.value = String(count);
+  countLabel.textContent = `count: ${count}`;
+}
+
+presetSelect.addEventListener('change', () => {
+  const preset = PRESETS[presetSelect.value];
+  if (preset) applyValues(preset[0], preset[1]);
+});
+```
+
+**Conditional parameter rows** — show or hide rows based on the active preset using `style.display`:
+
+```ts
+function updateRowVisibility() {
+  const isModeA = presetSelect.value === 'a';
+  (document.getElementById('row-a')! as HTMLElement).style.display = isModeA ? 'flex' : 'none';
+  (document.getElementById('row-b')! as HTMLElement).style.display = isModeA ? 'none' : 'flex';
+}
+presetSelect.addEventListener('change', updateRowVisibility);
+updateRowVisibility(); // call once on init
+```
+
+**Mobile:** these panels may overlap scene content on small screens. Either hide non-essential controls (`display:none` when `window.matchMedia('(pointer: coarse)').matches`) or reduce their size. If the top-right panel obscures the scene, shift the camera down to compensate (`camera.position.y`).
 
 ### Three.js 2D scene (OrthographicCamera)
 
