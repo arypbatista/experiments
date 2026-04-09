@@ -45,6 +45,17 @@
       <option value="infinite">Infinite ↕↔</option>
     </select>
   </div>
+
+  <div style="border-top:1px solid rgba(255,255,255,0.1);margin:2px 0;"></div>
+
+  <div style="display:flex;flex-direction:column;gap:3px;">
+    <span style="color:rgba(255,255,255,0.4);">DROP MODE</span>
+    <select id="sel-merge" style="background:#111;border:1px solid rgba(255,255,255,0.2);color:rgba(255,255,255,0.8);font-family:monospace;font-size:10px;padding:3px 5px;cursor:pointer;">
+      <option value="tile" selected>Tile</option>
+      <option value="dock">Dock</option>
+      <option value="merge">Merge</option>
+    </select>
+  </div>
 </div>
 
 <style is:global>
@@ -157,6 +168,15 @@
     border-color:rgba(255,180,80,0.6);
     border-style:dashed;
   }
+
+  /* Panel / dock structure */
+  .wm-panels { display: flex; flex-direction: column; }
+  .wm-panels.row { flex-direction: row; }
+  .wm-panel { display: flex; flex-direction: column; overflow: hidden; }
+  .wm-panels.row > .wm-panel { flex: 1; min-width: 0; }
+  .wm-panels > .wm-panel + .wm-panel { border-top: 1px solid rgba(255,255,255,0.09); }
+  .wm-panels.row > .wm-panel + .wm-panel { border-top: none; border-left: 1px solid rgba(255,255,255,0.09); }
+  .wm-btn-pop { background: #2ecc71; }
 </style>
 
 <script>
@@ -191,13 +211,20 @@ interface Win {
   closed: boolean;
   z: number;
   el: HTMLElement;
+  panelsEl: HTMLElement;
+  panel: HTMLElement;
   body: HTMLElement;
+  titlebar: HTMLElement;
+  panelsLayout: 'column' | 'row';
+  dockedIds: string[];
+  dockedIn: string | null;
 }
 
 interface ManagerState {
   sticky: boolean;
   contain: boolean;
   canvasMode: 'viewport' | 'infinite-y' | 'infinite-x' | 'infinite';
+  mergeMode: 'tile' | 'dock' | 'merge';
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -224,7 +251,7 @@ let drag: {
 } | null = null;
 
 
-const ms: ManagerState = { sticky: false, contain: true, canvasMode: 'viewport' };
+const ms: ManagerState = { sticky: false, contain: true, canvasMode: 'viewport', mergeMode: 'tile' };
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
 
@@ -288,6 +315,12 @@ function makeWin(cfg: WindowConfig): Win {
   const btns = document.createElement('div');
   btns.className = 'wm-btns';
 
+  const popBtn = document.createElement('button');
+  popBtn.className = 'wm-btn wm-btn-pop';
+  popBtn.title = 'Pop out';
+  popBtn.style.display = 'none';
+  btns.appendChild(popBtn);
+
   if (showMin) {
     const mb = document.createElement('button');
     mb.className = 'wm-btn wm-btn-min';
@@ -345,8 +378,18 @@ function makeWin(cfg: WindowConfig): Win {
     }
   }
 
-  el.appendChild(tb);
-  el.appendChild(body);
+  // Panel wrapper (titlebar + body together for dock/undock)
+  const panel = document.createElement('div');
+  panel.className = 'wm-panel';
+  panel.appendChild(tb);
+  panel.appendChild(body);
+
+  // Panels container
+  const panelsEl = document.createElement('div');
+  panelsEl.className = 'wm-panels';
+  panelsEl.appendChild(panel);
+
+  el.appendChild(panelsEl);
   canvasArea.appendChild(el);
 
   const win: Win = {
@@ -355,25 +398,28 @@ function makeWin(cfg: WindowConfig): Win {
     origX: cfg.position.x, origY: cfg.position.y,
     vx: 0, vy: 0, tx: null, ty: null,
     dragging: false, minimized: false, closed: false,
-    z: baseZ++, el, body,
+    z: baseZ++, el, panelsEl, panel, body, titlebar: tb,
+    panelsLayout: 'column', dockedIds: [], dockedIn: null,
   };
 
   applyTransform(win);
 
-  // Drag
+  // Drag — if this window is docked, drag the host instead
   tb.addEventListener('pointerdown', (e) => {
     if ((e.target as HTMLElement).closest('.wm-btns')) return;
     e.preventDefault();
     tb.setPointerCapture(e.pointerId);
-    front(win);
-    win.dragging = true;
-    win.tx = null; win.ty = null;
-    win.vx = 0;    win.vy = 0;
-    win.el.classList.add('is-dragging');
-    drag = { id: win.id, ox: win.x, oy: win.y, mx0: e.clientX, my0: e.clientY, pmx: e.clientX, pmy: e.clientY, ivx: 0, ivy: 0 };
+    const eff = win.dockedIn ? (wins.get(win.dockedIn) ?? win) : win;
+    front(eff);
+    eff.dragging = true;
+    eff.tx = null; eff.ty = null;
+    eff.vx = 0;    eff.vy = 0;
+    eff.el.classList.add('is-dragging');
+    drag = { id: eff.id, ox: eff.x, oy: eff.y, mx0: e.clientX, my0: e.clientY, pmx: e.clientX, pmy: e.clientY, ivx: 0, ivy: 0 };
   });
 
   // Buttons
+  popBtn.addEventListener('click', () => undockPanel(win));
   btns.querySelector('.wm-btn-close')?.addEventListener('click', () => closeWin(win));
   btns.querySelector('.wm-btn-min')?.addEventListener('click',   () => toggleMin(win));
 
@@ -400,6 +446,18 @@ function front(win: Win) {
 function closeWin(win: Win) {
   if (win.closed) return;
   win.closed = true;
+  if (win.dockedIn !== null) {
+    // Docked: remove just this panel from the host
+    const host = wins.get(win.dockedIn);
+    win.panel.style.transition = 'opacity 0.15s';
+    win.panel.style.opacity = '0';
+    setTimeout(() => {
+      win.panel.remove();
+      if (host) host.dockedIds = host.dockedIds.filter(id => id !== win.id);
+    }, 160);
+    win.dockedIn = null;
+    return;
+  }
   win.el.style.transition = 'transform 0.18s ease-in, opacity 0.18s ease-in';
   win.el.style.opacity    = '0';
   win.el.style.transform  = `translate(${win.x}px,${win.y}px) scale(0.82)`;
@@ -534,7 +592,11 @@ function clearDropOverlay() {
 
 // ─── Tile drop ────────────────────────────────────────────────────────────────
 
-function applyTileDrop(dragging: Win, target: Win, zone: string) {
+function applyTileDrop(dragging: Win, target: Win, zone: DropZone) {
+  if (ms.mergeMode === 'dock') { dockWindow(dragging, target, zone); return; }
+  if (ms.mergeMode === 'merge') { mergeWindows(dragging, target, zone); return; }
+
+  // tile mode: snap adjacent
   const tw = target.el.offsetWidth;
   const th = target.el.offsetHeight;
   const dw = dragging.el.offsetWidth;
@@ -550,6 +612,177 @@ function applyTileDrop(dragging: Win, target: Win, zone: string) {
 
   dragging.vx = 0; dragging.vy = 0;
   dragging.tx = nx; dragging.ty = ny;
+}
+
+// ─── Dock ─────────────────────────────────────────────────────────────────────
+
+function dockWindow(dragging: Win, target: Win, zone: DropZone) {
+  // If dragging is already docked, undock it first
+  if (dragging.dockedIn !== null) undockPanel(dragging);
+
+  const isRow = zone === 'left' || zone === 'right';
+  target.panelsLayout = isRow ? 'row' : 'column';
+  target.panelsEl.className = isRow ? 'wm-panels row' : 'wm-panels';
+
+  // Insert before or after based on zone
+  if (zone === 'left' || zone === 'top') {
+    target.panelsEl.insertBefore(dragging.panel, target.panelsEl.firstChild);
+  } else {
+    target.panelsEl.appendChild(dragging.panel);
+  }
+
+  // Show pop button in the docked panel
+  const popBtn = dragging.titlebar.querySelector('.wm-btn-pop') as HTMLElement | null;
+  if (popBtn) popBtn.style.display = 'block';
+
+  // Remove dragging's outer wrapper from canvas
+  dragging.el.remove();
+  dragging.dockedIn = target.id;
+  target.dockedIds.push(dragging.id);
+}
+
+function undockPanel(win: Win) {
+  if (win.dockedIn === null) return;
+  const host = wins.get(win.dockedIn)!;
+
+  // Remove panel from host
+  win.panel.remove();
+  host.dockedIds = host.dockedIds.filter(id => id !== win.id);
+  win.dockedIn = null;
+
+  // Hide pop button
+  const popBtn = win.titlebar.querySelector('.wm-btn-pop') as HTMLElement | null;
+  if (popBtn) popBtn.style.display = 'none';
+
+  // Create fresh outer wrapper
+  const el = document.createElement('div');
+  el.className = 'wm-win';
+  el.id = `wm-${win.id}`;
+  el.style.width    = `${Math.min(win.cfg.width ?? 320, window.innerWidth - OUTER_GUTTER * 2)}px`;
+  el.style.maxWidth = `calc(100vw - ${OUTER_GUTTER * 2}px)`;
+  el.style.zIndex   = String(++baseZ);
+
+  const panelsEl = document.createElement('div');
+  panelsEl.className = 'wm-panels';
+  panelsEl.appendChild(win.panel);
+  el.appendChild(panelsEl);
+  canvasArea.appendChild(el);
+
+  win.el = el;
+  win.panelsEl = panelsEl;
+  win.panelsLayout = 'column';
+  win.z = baseZ;
+  win.x = host.x + 30;
+  win.y = host.y + 30;
+  win.vx = 3; win.vy = -2;
+  win.tx = null; win.ty = null;
+
+  el.addEventListener('pointerdown', () => front(win));
+  applyTransform(win);
+}
+
+// ─── Merge (permanent) ────────────────────────────────────────────────────────
+
+function mergeWindows(dragging: Win, target: Win, zone: DropZone) {
+  const isRow = zone === 'left' || zone === 'right';
+  const combinedTitle = `${target.cfg.title ?? target.id} + ${dragging.cfg.title ?? dragging.id}`;
+
+  const el = document.createElement('div');
+  el.className = 'wm-win';
+  const newWidth = isRow
+    ? Math.min((target.cfg.width ?? 320) + (dragging.cfg.width ?? 320), window.innerWidth - OUTER_GUTTER * 2)
+    : Math.max(target.cfg.width ?? 320, dragging.cfg.width ?? 320);
+  el.style.width    = `${newWidth}px`;
+  el.style.maxWidth = `calc(100vw - ${OUTER_GUTTER * 2}px)`;
+  el.style.zIndex   = String(baseZ);
+
+  // Single titlebar for the merged window
+  const tb = document.createElement('div');
+  tb.className = 'wm-titlebar';
+  const titleEl = document.createElement('span');
+  titleEl.className = 'wm-title';
+  titleEl.textContent = combinedTitle;
+  const btns = document.createElement('div');
+  btns.className = 'wm-btns';
+  const cb = document.createElement('button');
+  cb.className = 'wm-btn wm-btn-close';
+  btns.appendChild(cb);
+  tb.appendChild(titleEl);
+  tb.appendChild(btns);
+
+  // Move content bodies into a flex container (no individual titlebars)
+  const mergedBody = document.createElement('div');
+  mergedBody.style.cssText = isRow
+    ? 'display:flex;flex-direction:row;'
+    : 'display:flex;flex-direction:column;';
+
+  // Wrapper for each body so they have flex:1
+  const wrapA = document.createElement('div');
+  wrapA.style.cssText = isRow ? 'flex:1;min-width:0;overflow:hidden;' : 'overflow:hidden;';
+  const wrapB = document.createElement('div');
+  wrapB.style.cssText = isRow ? 'flex:1;min-width:0;overflow:hidden;border-left:1px solid rgba(255,255,255,0.09);' : 'overflow:hidden;border-top:1px solid rgba(255,255,255,0.09);';
+
+  const [firstBody, secondBody] = (zone === 'left' || zone === 'top')
+    ? [dragging.body, target.body]
+    : [target.body, dragging.body];
+
+  // Reset any fixed height on bodies so content shows naturally
+  firstBody.style.maxHeight  = '';
+  secondBody.style.maxHeight = '';
+  wrapA.appendChild(firstBody);
+  wrapB.appendChild(secondBody);
+  mergedBody.appendChild(wrapA);
+  mergedBody.appendChild(wrapB);
+
+  // Wrap in wm-panels > wm-panel for structural consistency
+  const panel = document.createElement('div');
+  panel.className = 'wm-panel';
+  panel.appendChild(mergedBody);
+  const panelsEl = document.createElement('div');
+  panelsEl.className = 'wm-panels';
+  panelsEl.appendChild(panel);
+
+  el.appendChild(tb);
+  el.appendChild(panelsEl);
+  canvasArea.appendChild(el);
+
+  const mergedId = `merged-${Date.now()}`;
+  el.id = `wm-${mergedId}`;
+
+  const mergedWin: Win = {
+    id: mergedId,
+    cfg: { id: mergedId, title: combinedTitle, width: newWidth, position: { x: target.x, y: target.y }, content: { type: 'html', html: '' } },
+    x: target.x, y: target.y,
+    origX: target.x, origY: target.y,
+    vx: 0, vy: 0, tx: null, ty: null,
+    dragging: false, minimized: false, closed: false,
+    z: baseZ++,
+    el, panelsEl, panel, body: mergedBody, titlebar: tb,
+    panelsLayout: 'column', dockedIds: [], dockedIn: null,
+  };
+
+  wins.set(mergedId, mergedWin);
+  applyTransform(mergedWin);
+
+  tb.addEventListener('pointerdown', (e) => {
+    if ((e.target as HTMLElement).closest('.wm-btns')) return;
+    e.preventDefault();
+    tb.setPointerCapture(e.pointerId);
+    front(mergedWin);
+    mergedWin.dragging = true;
+    mergedWin.tx = null; mergedWin.ty = null;
+    mergedWin.vx = 0;    mergedWin.vy = 0;
+    mergedWin.el.classList.add('is-dragging');
+    drag = { id: mergedWin.id, ox: mergedWin.x, oy: mergedWin.y, mx0: e.clientX, my0: e.clientY, pmx: e.clientX, pmy: e.clientY, ivx: 0, ivy: 0 };
+  });
+  cb.addEventListener('click', () => closeWin(mergedWin));
+  el.addEventListener('pointerdown', () => front(mergedWin));
+
+  // Close originals silently (bodies already moved out)
+  target.closed  = true; target.el.remove();
+  dragging.closed = true; dragging.el.remove();
+  wins.delete(target.id);
+  wins.delete(dragging.id);
 }
 
 // ─── Sticky snap ──────────────────────────────────────────────────────────────
@@ -581,7 +814,7 @@ function applyStickySnap(win: Win) {
 
 function tick() {
   for (const [, win] of wins) {
-    if (win.closed || win.dragging) continue;
+    if (win.closed || win.dragging || win.dockedIn !== null) continue;
 
     if (win.tx !== null && win.ty !== null) {
       // Spring toward target
@@ -698,12 +931,15 @@ const toggleSticky  = document.getElementById('toggle-sticky')!  as HTMLInputEle
 const toggleContain = document.getElementById('toggle-contain')!  as HTMLInputElement;
 const selCanvas     = document.getElementById('sel-canvas')!      as HTMLSelectElement;
 
+const selMerge = document.getElementById('sel-merge')! as HTMLSelectElement;
+
 toggleSticky .addEventListener('change', () => { ms.sticky  = toggleSticky.checked; });
 toggleContain.addEventListener('change', () => { ms.contain = toggleContain.checked; });
 selCanvas    .addEventListener('change', () => {
   ms.canvasMode = selCanvas.value as typeof ms.canvasMode;
   applyCanvasMode();
 });
+selMerge     .addEventListener('change', () => { ms.mergeMode = selMerge.value as typeof ms.mergeMode; });
 
 // Keyboard shortcuts
 window.addEventListener('keydown', (e) => {
