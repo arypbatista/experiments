@@ -15,8 +15,9 @@ Dragging a window onto another reveals a directional zone overlay: the four edge
 | Drag titlebar | Move window |
 | Click minimize (yellow dot) | Collapse window to titlebar |
 | Click close (red dot) | Dismiss window |
-| Drag onto edge of another | Tile adjacent (springs to position) |
-| Drag onto center of another | Overlap without tiling |
+| Drag onto edge of another | Action depends on Drop Mode (see below) |
+| Drag onto center of another | Overlap without action |
+| Click pop-out (green dot) | Undock a panel from a docked group |
 | `C` | Close all windows |
 | `R` | Restart (re-spawn all windows) |
 | `P` | Reposition (spring back to original positions) |
@@ -78,6 +79,37 @@ makeWin({
 | **Sticky** | After release, snaps a window's edges flush to any neighbour within `SNAP_DIST`. Uses spring animation to close the gap. Windows are not merged — each remains independent. |
 | **Contain** | Clamps windows inside the viewport on every tick. Velocity component is negated (× 0.45) on collision, producing a soft bounce. |
 | **Canvas mode** | `Viewport` — overflow hidden, no scroll. `Infinite ↕ / ↔ / ↕↔` — canvas area expands to 6 000 px in the relevant axis and the desktop becomes scrollable. |
+| **Drop mode** | Controls what happens when a window is dropped onto an edge zone of another (see below). |
+
+## Drop modes
+
+### Tile (default)
+
+The dragged window springs to a position flush against the target's edge. Both windows remain fully independent.
+
+### Dock
+
+The dragged window's panel (titlebar + body) is moved into the target window's panel container, creating a **docked group**. The group moves as a single unit. Each panel keeps its own titlebar with minimize and close buttons. A green **pop-out dot** appears in each docked panel's titlebar — clicking it extracts the panel back to a standalone window with a small bounce animation.
+
+Drop zone determines layout:
+
+| Zone | Layout |
+|---|---|
+| Top / Bottom | Panels stacked vertically (flex column) |
+| Left / Right | Panels arranged side by side (flex row) |
+
+Docked panels are excluded from the physics loop — they move with their host. Dragging any titlebar inside a group moves the whole group.
+
+### Merge
+
+The two windows are **permanently combined** into a single new window with one shared titlebar. The original windows are removed. Content from both is placed inside a flex container:
+
+| Drop zone | Content layout |
+|---|---|
+| Top / Bottom | Stacked vertically |
+| Left / Right | Side by side |
+
+The merged window behaves like any other window (draggable, closeable, physics). It cannot be split back.
 
 ## Drop-zone detection
 
