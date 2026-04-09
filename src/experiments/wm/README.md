@@ -71,6 +71,36 @@ makeWin({
 });
 ```
 
+## Toggles
+
+| Toggle | Effect |
+|---|---|
+| **Sticky** | After release, snaps a window's edges flush to any neighbour within `SNAP_DIST`. Uses spring animation to close the gap. Windows are not merged — each remains independent. |
+| **Contain** | Clamps windows inside the viewport on every tick. Velocity component is negated (× 0.45) on collision, producing a soft bounce. |
+| **Canvas mode** | `Viewport` — overflow hidden, no scroll. `Infinite ↕ / ↔ / ↕↔` — canvas area expands to 6 000 px in the relevant axis and the desktop becomes scrollable. |
+
+## Drop-zone detection
+
+Hit-testing is done against `getBoundingClientRect()` of each candidate window, sorted by `z-index` descending so the visually topmost window always wins when windows overlap. The test runs fresh at `pointerup` (using the exact release coordinates) rather than reading a cached value — this avoids stale results when the final `pointermove` fires with the cursor slightly off the target.
+
+Zone thresholds (fraction of window size):
+
+```
+left  rx < 0.25    →  tile left
+right rx > 0.75    →  tile right
+top   ry < 0.25    →  tile above
+bot   ry > 0.75    →  tile below
+else               →  overlap (center, no tiling)
+```
+
+## Resize behaviour
+
+On `window resize`, each window's `(x, y)` and `(origX, origY)` are scaled proportionally by `(newW / oldW, newH / oldH)`. This keeps the relative layout intact at any viewport size; windows may overlap if the viewport shrinks significantly.
+
+## Mobile / touch
+
+`touch-action: none` is set on the titlebar so the browser does not interpret the drag as a scroll gesture and send `pointercancel`. All drag handling uses the Pointer Events API (`pointerdown / pointermove / pointerup / pointercancel`) with `setPointerCapture` on the titlebar element, which works for both mouse and touch without separate touch-event handlers.
+
 ## Tuning tips
 
 - **Too floaty**: increase `MOMENTUM_DECAY` toward 0.95.
@@ -78,3 +108,4 @@ makeWin({
 - **Spring overshoots forever**: decrease `SPRING_DAMP` or increase `SPRING_K`.
 - **Tilt too aggressive**: reduce the `0.35` multiplier in `applyTransform`.
 - **Sticky snap fires too eagerly**: increase `SNAP_DIST`.
+- **Drop zones too sensitive**: widen the center zone by shrinking the edge thresholds (e.g. `0.20` / `0.80`).
