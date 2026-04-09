@@ -55,7 +55,10 @@
       style="accent-color:white;width:100%;"
     />
   </label>
-  <label id="moon-angle-row" style="display:flex;flex-direction:column;gap:3px;">
+  <label
+    id="moon-angle-row"
+    style="display:flex;flex-direction:column;gap:3px;"
+  >
     <span id="angle-label">moon angle offset: 0.12 rad</span>
     <input
       id="angle-range"
@@ -67,7 +70,10 @@
       style="accent-color:white;width:100%;"
     />
   </label>
-  <label id="launch-angle-row" style="display:none;flex-direction:column;gap:3px;">
+  <label
+    id="launch-angle-row"
+    style="display:none;flex-direction:column;gap:3px;"
+  >
     <span id="launch-angle-label">launch angle: 0°</span>
     <input
       id="launch-angle-range"
@@ -218,9 +224,9 @@
   const SLING_SCALE = 3.3; // px drag → px/s velocity
 
   // ── Tunable auto-launch parameters ────────────────────────────────────────
-  let launchImpulse = 1.05;      // multiplier on V_LAUNCH_BASE
-  let launchAngleOffset = 0.12;  // rad ahead of predicted Moon position (moon-orbit only)
-  let launchAngleDeg = 0;        // fixed launch angle in degrees (non-moon presets)
+  let launchImpulse = 1.05; // multiplier on V_LAUNCH_BASE
+  let launchAngleOffset = 0.12; // rad ahead of predicted Moon position (moon-orbit only)
+  let launchAngleDeg = 0; // fixed launch angle in degrees (non-moon presets)
 
   // ── Static scene objects ───────────────────────────────────────────────────
 
@@ -331,7 +337,7 @@
   // ── Physics step ──────────────────────────────────────────────────────────
 
   function computeLaunchAngle(): number {
-    if (presetSelect.value === 'moon-orbit') {
+    if (presetSelect.value === "moon-orbit") {
       return moonAngle + MOON_OMEGA * T_XFER_HALF + launchAngleOffset + Math.PI;
     }
     return launchAngleDeg * (Math.PI / 180);
@@ -344,7 +350,7 @@
       Math.cos(la) * R_EARTH,
       Math.sin(la) * R_EARTH,
       -Math.sin(la) * vl,
-       Math.cos(la) * vl,
+      Math.cos(la) * vl,
     );
   }
 
@@ -363,7 +369,7 @@
           ship.sy = Math.sin(la) * R_EARTH;
           const vl = V_LAUNCH_BASE * launchImpulse;
           ship.svx = -Math.sin(la) * vl;
-          ship.svy =  Math.cos(la) * vl;
+          ship.svy = Math.cos(la) * vl;
           ship.heading = Math.atan2(ship.svy, ship.svx);
           ship.crashed = false;
           ship.mesh.visible = true;
@@ -399,8 +405,18 @@
     const re = Math.hypot(ship.sx, ship.sy);
     const rm = Math.hypot(mx - ship.sx, my - ship.sy);
 
-    const offScreen = Math.abs(ship.sx) > W / 2 || Math.abs(ship.sy) > H / 2;
+    const offScreenThreshold = 3;
+    const offScreen =
+      Math.abs(ship.sx) > (W / 2) * offScreenThreshold ||
+      Math.abs(ship.sy) > (H / 2) * offScreenThreshold;
     if (re < R_EARTH || rm < R_MOON || offScreen) {
+      console.debug("Ship crashed", {
+        "Distance to Earth": re.toFixed(2),
+        "Distance to Moon": rm.toFixed(2),
+        "Distance to center": Math.hypot(ship.sx, ship.sy).toFixed(2),
+        "Is Offscreen?": offScreen,
+      });
+
       ship.crashed = true;
       ship.crashTimer = 1.5;
       ship.mesh.visible = false;
@@ -555,64 +571,70 @@
     }
   }
 
-  const presetSelect      = document.getElementById('preset-select')      as HTMLSelectElement;
-  const impulseRange      = document.getElementById('impulse-range')      as HTMLInputElement;
-  const impulseLabel      = document.getElementById('impulse-label')!;
-  const angleRange        = document.getElementById('angle-range')        as HTMLInputElement;
-  const angleLabel        = document.getElementById('angle-label')!;
-  const moonAngleRow      = document.getElementById('moon-angle-row')!;
-  const launchAngleRow    = document.getElementById('launch-angle-row')!;
-  const launchAngleRange  = document.getElementById('launch-angle-range') as HTMLInputElement;
-  const launchAngleLabel  = document.getElementById('launch-angle-label')!;
+  const presetSelect = document.getElementById(
+    "preset-select",
+  ) as HTMLSelectElement;
+  const impulseRange = document.getElementById(
+    "impulse-range",
+  ) as HTMLInputElement;
+  const impulseLabel = document.getElementById("impulse-label")!;
+  const angleRange = document.getElementById("angle-range") as HTMLInputElement;
+  const angleLabel = document.getElementById("angle-label")!;
+  const moonAngleRow = document.getElementById("moon-angle-row")!;
+  const launchAngleRow = document.getElementById("launch-angle-row")!;
+  const launchAngleRange = document.getElementById(
+    "launch-angle-range",
+  ) as HTMLInputElement;
+  const launchAngleLabel = document.getElementById("launch-angle-label")!;
 
   // Presets: [impulse, moonAngleOffset, launchAngleDeg]
   const PRESETS: Record<string, [number, number, number]> = {
-    'low-orbit':  [0.91,  0.0,  0],
-    'high-orbit': [0.97,  0.0,  0],
-    'moon-orbit': [1.05,  0.12, 0],
+    "low-orbit": [0.91, 0.0, 0],
+    "high-orbit": [0.97, 0.0, 0],
+    "moon-orbit": [1.05, 0.12, 0],
   };
 
   function updateAngleRowVisibility() {
-    const isMoon = presetSelect.value === 'moon-orbit';
-    moonAngleRow.style.display   = isMoon ? 'flex' : 'none';
-    launchAngleRow.style.display = isMoon ? 'none' : 'flex';
+    const isMoon = presetSelect.value === "moon-orbit";
+    moonAngleRow.style.display = isMoon ? "flex" : "none";
+    launchAngleRow.style.display = isMoon ? "none" : "flex";
   }
 
   function applyValues(impulse: number, moonOffset: number, launchDeg: number) {
-    launchImpulse     = impulse;
+    launchImpulse = impulse;
     launchAngleOffset = moonOffset;
-    launchAngleDeg    = launchDeg;
-    impulseRange.value     = impulse.toFixed(2);
-    angleRange.value       = moonOffset.toFixed(2);
+    launchAngleDeg = launchDeg;
+    impulseRange.value = impulse.toFixed(2);
+    angleRange.value = moonOffset.toFixed(2);
     launchAngleRange.value = String(launchDeg);
-    impulseLabel.textContent     = `impulse: ${impulse.toFixed(2)}`;
-    angleLabel.textContent       = `moon angle offset: ${moonOffset.toFixed(2)} rad`;
+    impulseLabel.textContent = `impulse: ${impulse.toFixed(2)}`;
+    angleLabel.textContent = `moon angle offset: ${moonOffset.toFixed(2)} rad`;
     launchAngleLabel.textContent = `launch angle: ${launchDeg}°`;
     updateAngleRowVisibility();
   }
 
-  presetSelect.addEventListener('change', () => {
+  presetSelect.addEventListener("change", () => {
     const preset = PRESETS[presetSelect.value];
     if (preset) applyValues(preset[0], preset[1], preset[2]);
     else updateAngleRowVisibility();
   });
 
-  impulseRange.addEventListener('input', () => {
+  impulseRange.addEventListener("input", () => {
     launchImpulse = parseFloat(impulseRange.value);
     impulseLabel.textContent = `impulse: ${launchImpulse.toFixed(2)}`;
-    presetSelect.value = 'custom';
+    presetSelect.value = "custom";
   });
 
-  angleRange.addEventListener('input', () => {
+  angleRange.addEventListener("input", () => {
     launchAngleOffset = parseFloat(angleRange.value);
     angleLabel.textContent = `moon angle offset: ${launchAngleOffset.toFixed(2)} rad`;
-    presetSelect.value = 'custom';
+    presetSelect.value = "custom";
   });
 
-  launchAngleRange.addEventListener('input', () => {
+  launchAngleRange.addEventListener("input", () => {
     launchAngleDeg = parseInt(launchAngleRange.value);
     launchAngleLabel.textContent = `launch angle: ${launchAngleDeg}°`;
-    presetSelect.value = 'custom';
+    presetSelect.value = "custom";
   });
 
   updateAngleRowVisibility();
