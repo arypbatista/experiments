@@ -329,7 +329,7 @@ const shapes: Record<string, Vec3[]> = {};
 async function loadShape(name: string): Promise<Vec3[]> {
   if (shapes[name]) return shapes[name];
   const suffix = name === 'Figure08' ? '' : '.sorted';
-  const res  = await fetch(`/flock-images/${name}${suffix}.json`);
+  const res  = await fetch(`/flock-shapes/${name}${suffix}.json`);
   const data: Vec3[] = await res.json();
   shapes[name] = data.slice(0, MAX_DOTS);
   return shapes[name];
