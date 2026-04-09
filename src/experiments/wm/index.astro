@@ -87,6 +87,7 @@
     border-bottom: 1px solid rgba(255,255,255,0.09);
     cursor: grab;
     user-select: none;
+    touch-action: none;
   }
   .wm-titlebar:active { cursor: grabbing; }
 
@@ -464,7 +465,11 @@ window.addEventListener('pointerup', (_e: PointerEvent) => {
 window.addEventListener('pointercancel', () => {
   if (!drag) return;
   const win = wins.get(drag.id);
-  if (win) { win.dragging = false; win.el.classList.remove('is-dragging'); }
+  if (win) {
+    win.dragging = false;
+    win.vx = 0; win.vy = 0;
+    win.el.classList.remove('is-dragging');
+  }
   clearDropOverlay();
   drag = null;
 });
