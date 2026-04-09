@@ -64,6 +64,16 @@
     <span>DOTS</span><span id="v-dots">3500</span>
     <input type="range" id="sl-dots" min="250" max="5000" value="3500" step="250">
   </div>
+
+  <!-- Divider -->
+  <div style="border-top: 1px solid rgba(255,255,255,0.1); margin: 4px 0;"></div>
+
+  <!-- Camera info — one row -->
+  <div id="cam-info" style="font-size:10px;color:rgba(255,255,255,0.4);letter-spacing:0.05em;display:flex;gap:10px;white-space:nowrap;">
+    <span>AZ <span id="cam-az">—</span>°</span>
+    <span>EL <span id="cam-el">—</span>°</span>
+    <span>ZOOM <span id="cam-dist">—</span></span>
+  </div>
 </div>
 
 <style is:global>
@@ -292,12 +302,10 @@ const DOT_OPACITY = 0.55;
 const FIGURE_NAMES = [
   'Figure01', 'Figure02', 'Figure03', 'Figure04',
   'Figure05', 'Figure06', 'Figure07', 'Figure08',
-  'Figure09',
 ];
 const CHOREOGRAPHY = [
   'Figure08', 'Figure07', 'Figure04', 'Figure05',
   'Figure02', 'Figure06', 'Figure01', 'Figure03',
-  'Figure09',
 ];
 const AVOID_POINTS = [
   new THREE.Vector3(5, -6, -2.5),
@@ -307,7 +315,6 @@ const AVOID_POINTS = [
   new THREE.Vector3(0,   0,  2.5),
   new THREE.Vector3(5,  -2, -2.5),
   new THREE.Vector3(10, 10, -2.5),
-  new THREE.Vector3(-8,  4, -5.0),
 ];
 
 let avoidIdx = 0;
@@ -337,7 +344,7 @@ renderer.setClearColor(0x000000, 1);
 
 const scene  = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 2000);
-camera.position.set(0, -80, 55);
+camera.position.set(7.26, -1.29, 98.89);
 camera.lookAt(0, 2, 0);
 camera.updateProjectionMatrix();
 
@@ -383,6 +390,23 @@ function buildPointCloud(n: number, inheritOpacity = 0) {
   return { attr, mat };
 }
 
+// ─── Camera HUD ───────────────────────────────────────────────────────────────
+
+const camAzEl   = document.getElementById('cam-az')   as HTMLSpanElement;
+const camElEl   = document.getElementById('cam-el')   as HTMLSpanElement;
+const camDistEl = document.getElementById('cam-dist') as HTMLSpanElement;
+
+function updateCamHUD() {
+  const offset = camera.position.clone().sub(controls.target);
+  const dist   = offset.length();
+  // Spherical angles: azimuth around Y, elevation above XZ plane
+  const azDeg = ((Math.atan2(offset.x, offset.z) * 180 / Math.PI) + 360) % 360;
+  const elDeg = Math.asin(offset.y / dist) * 180 / Math.PI;
+  camAzEl.textContent   = azDeg.toFixed(1);
+  camElEl.textContent   = elDeg.toFixed(1);
+  camDistEl.textContent = dist.toFixed(1);
+}
+
 // ─── Render loop ──────────────────────────────────────────────────────────────
 
 function animate() {
@@ -419,6 +443,7 @@ function animate() {
 
   posAttr.needsUpdate = true;
   controls.update();
+  updateCamHUD();
   renderer.render(scene, camera);
 }
 
@@ -693,7 +718,7 @@ async function main() {
       // Recentre orbit on the actual bounding-box centre of the shapes
       const center = computeCenter(shapes[CHOREOGRAPHY[0]]);
       controls.target.copy(center);
-      camera.position.set(center.x, center.y - 80, center.z + 55);
+      camera.position.set(center.x + 7.26, center.y - 3.29, center.z + 98.89);
       controls.update();
 
       cluster.setBoost(3, 3);
