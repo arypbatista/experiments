@@ -1,0 +1,413 @@
+---
+---
+
+<canvas id="canvas" style="display:block;width:100%;height:100%;position:fixed;top:0;left:0;"></canvas>
+
+<!-- Controls panel — top-right, clears the back-button overlay -->
+<div id="controls" style="
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  font-family: monospace;
+  font-size: 11px;
+  color: rgba(255,255,255,0.85);
+  background: rgba(0,0,0,0.55);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 4px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 168px;
+  user-select: none;
+">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+    <span>DOTS</span>
+    <select id="sel-count" style="
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: inherit;
+      font-family: inherit;
+      font-size: inherit;
+      border-radius: 2px;
+      padding: 1px 4px;
+      cursor: pointer;
+    ">
+      <option value="16">256</option>
+      <option value="32">1 024</option>
+      <option value="48" selected>2 304</option>
+      <option value="64">4 096</option>
+    </select>
+  </div>
+
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <div style="display:flex;justify-content:space-between;">
+      <span>SEPARATION</span><span id="val-sep">20</span>
+    </div>
+    <input id="sl-sep" type="range" min="0" max="100" value="20" step="1" style="width:100%;accent-color:rgba(255,255,255,0.6);">
+  </label>
+
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <div style="display:flex;justify-content:space-between;">
+      <span>ALIGNMENT</span><span id="val-ali">20</span>
+    </div>
+    <input id="sl-ali" type="range" min="0" max="100" value="20" step="1" style="width:100%;accent-color:rgba(255,255,255,0.6);">
+  </label>
+
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <div style="display:flex;justify-content:space-between;">
+      <span>COHESION</span><span id="val-coh">20</span>
+    </div>
+    <input id="sl-coh" type="range" min="0" max="100" value="20" step="1" style="width:100%;accent-color:rgba(255,255,255,0.6);">
+  </label>
+
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <div style="display:flex;justify-content:space-between;">
+      <span>DOT SIZE</span><span id="val-sz">3.0</span>
+    </div>
+    <input id="sl-sz" type="range" min="0.3" max="3" value="3" step="0.1" style="width:100%;accent-color:rgba(255,255,255,0.6);">
+  </label>
+</div>
+
+<script>
+import * as THREE from 'three';
+import { GPUComputationRenderer } from 'three/addons/misc/GPUComputationRenderer.js';
+
+const BOUNDS      = 800;
+const BOUNDS_HALF = BOUNDS / 2;
+
+// --- Shaders (static — shared across reinits) ---
+
+const positionShader = /* glsl */`
+  uniform float time;
+  uniform float delta;
+
+  void main() {
+    vec2 uv = gl_FragCoord.xy / resolution.xy;
+    vec3 position = texture2D(texturePosition, uv).xyz;
+    vec3 velocity = texture2D(textureVelocity, uv).xyz;
+    gl_FragColor = vec4(position + velocity * delta * 15.0, 1.0);
+  }
+`;
+
+const velocityShader = /* glsl */`
+  uniform float time;
+  uniform float delta;
+  uniform float separationDistance;
+  uniform float alignmentDistance;
+  uniform float cohesionDistance;
+  uniform vec3  predator;
+
+  const float width  = resolution.x;
+  const float height = resolution.y;
+  const float PI     = 3.141592653589793;
+  const float PI_2   = PI * 2.0;
+  const float UPPER_BOUNDS = BOUNDS;
+  const float SPEED_LIMIT  = 9.0;
+
+  float zoneRadius       = 40.0;
+  float zoneRadiusSq     = 1600.0;
+  float separationThresh = 0.45;
+  float alignmentThresh  = 0.65;
+
+  void main() {
+    zoneRadius       = separationDistance + alignmentDistance + cohesionDistance;
+    separationThresh = separationDistance / zoneRadius;
+    alignmentThresh  = (separationDistance + alignmentDistance) / zoneRadius;
+    zoneRadiusSq     = zoneRadius * zoneRadius;
+
+    vec2 uv      = gl_FragCoord.xy / resolution.xy;
+    vec3 selfPos = texture2D(texturePosition, uv).xyz;
+    vec3 selfVel = texture2D(textureVelocity, uv).xyz;
+    vec3 vel     = selfVel;
+    float limit  = SPEED_LIMIT;
+
+    // Predator avoidance
+    vec3 predDir   = predator * UPPER_BOUNDS - selfPos;
+    predDir.z      = 0.0;
+    float predDist = length(predDir);
+    float preyR    = 150.0;
+    if (predDist < preyR) {
+      float f = (predDist * predDist / (preyR * preyR) - 1.0) * delta * 100.0;
+      vel += normalize(predDir) * f;
+      limit += 5.0;
+    }
+
+    // Center attraction
+    vec3 toCenter = selfPos;
+    toCenter.y   *= 2.5;
+    vel -= normalize(toCenter) * delta * 5.0;
+
+    // Boid neighborhood
+    for (float y = 0.0; y < height; y++) {
+      for (float x = 0.0; x < width; x++) {
+        vec2  ref      = vec2(x + 0.5, y + 0.5) / resolution.xy;
+        vec3  otherPos = texture2D(texturePosition, ref).xyz;
+        vec3  d        = otherPos - selfPos;
+        float dist     = length(d);
+        if (dist < 0.0001) continue;
+        float distSq = dist * dist;
+        if (distSq > zoneRadiusSq) continue;
+        float pct = distSq / zoneRadiusSq;
+
+        if (pct < separationThresh) {
+          float f = (separationThresh / pct - 1.0) * delta;
+          vel -= normalize(d) * f;
+        } else if (pct < alignmentThresh) {
+          float td       = alignmentThresh - separationThresh;
+          float ap       = (pct - separationThresh) / td;
+          vec3  otherVel = texture2D(textureVelocity, ref).xyz;
+          float f = (0.5 - cos(ap * PI_2) * 0.5 + 0.5) * delta;
+          vel += normalize(otherVel) * f;
+        } else {
+          float td = 1.0 - alignmentThresh;
+          float ap = td == 0.0 ? 1.0 : (pct - alignmentThresh) / td;
+          float f  = (0.5 - (cos(ap * PI_2) * -0.5 + 0.5)) * delta;
+          vel += normalize(d) * f;
+        }
+      }
+    }
+
+    if (length(vel) > limit) vel = normalize(vel) * limit;
+    gl_FragColor = vec4(vel, 1.0);
+  }
+`;
+
+const dotVS = /* glsl */`
+  attribute vec2 reference;
+  uniform sampler2D texturePosition;
+  uniform sampler2D textureVelocity;
+  uniform float dotSize;
+
+  varying float vSpeed;
+
+  void main() {
+    vec3 pos = texture2D(texturePosition, reference).xyz;
+    vec3 vel = texture2D(textureVelocity, reference).xyz;
+    vSpeed = length(vel);
+
+    vec4 mvPos   = modelViewMatrix * vec4(pos, 1.0);
+    gl_PointSize = clamp(dotSize * 3.0 * 300.0 / -mvPos.z, 1.0, 20.0);
+    gl_Position  = projectionMatrix * mvPos;
+  }
+`;
+
+const dotFS = /* glsl */`
+  varying float vSpeed;
+
+  void main() {
+    vec2  c = gl_PointCoord * 2.0 - 1.0;
+    float r = dot(c, c);
+    if (r > 1.0) discard;
+
+    float alpha = 1.0 - smoothstep(0.5, 1.0, r);
+    float t     = clamp(vSpeed / 12.0, 0.0, 1.0);
+    vec3  col   = mix(vec3(0.3, 0.55, 1.0), vec3(1.0, 1.0, 1.0), t);
+    gl_FragColor = vec4(col, alpha);
+  }
+`;
+
+// --- Persistent objects ---
+const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 1, 3000);
+camera.position.z = 350;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+scene.fog = new THREE.FogExp2(0x000000, 0.0008);
+
+// --- Simulation state (replaced on reinit) ---
+interface SimState {
+  gpuCompute: GPUComputationRenderer;
+  positionVar: ReturnType<GPUComputationRenderer['addVariable']>;
+  velocityVar: ReturnType<GPUComputationRenderer['addVariable']>;
+  posUniforms: Record<string, { value: unknown }>;
+  velUniforms: Record<string, { value: unknown }>;
+  dotUniforms: { texturePosition: { value: THREE.Texture | null }; textureVelocity: { value: THREE.Texture | null }; dotSize: { value: number } };
+  points: THREE.Points;
+}
+
+let sim: SimState | null = null;
+
+// Shared params that survive reinit
+const params = {
+  separation: 20,
+  alignment:  20,
+  cohesion:   20,
+  dotSize:    3.0,
+};
+
+function initSim(width: number): SimState {
+  const dots = width * width;
+
+  // GPGPU
+  const gpuCompute = new GPUComputationRenderer(width, width, renderer);
+  const dtPos = gpuCompute.createTexture();
+  const dtVel = gpuCompute.createTexture();
+  const pd = dtPos.image.data as Float32Array;
+  const vd = dtVel.image.data as Float32Array;
+  for (let k = 0; k < pd.length; k += 4) {
+    pd[k]   = Math.random() * BOUNDS - BOUNDS_HALF;
+    pd[k+1] = Math.random() * BOUNDS - BOUNDS_HALF;
+    pd[k+2] = Math.random() * BOUNDS - BOUNDS_HALF;
+    pd[k+3] = 1;
+    vd[k]   = (Math.random() - 0.5) * 10;
+    vd[k+1] = (Math.random() - 0.5) * 10;
+    vd[k+2] = (Math.random() - 0.5) * 10;
+    vd[k+3] = 1;
+  }
+
+  const velocityVar = gpuCompute.addVariable('textureVelocity', velocityShader, dtVel);
+  const positionVar = gpuCompute.addVariable('texturePosition', positionShader, dtPos);
+  gpuCompute.setVariableDependencies(velocityVar, [positionVar, velocityVar]);
+  gpuCompute.setVariableDependencies(positionVar, [positionVar, velocityVar]);
+
+  const posUniforms = positionVar.material.uniforms as Record<string, { value: unknown }>;
+  const velUniforms = velocityVar.material.uniforms as Record<string, { value: unknown }>;
+  posUniforms['time']  = { value: 0.0 };
+  posUniforms['delta'] = { value: 0.0 };
+  velUniforms['time']  = { value: 1.0 };
+  velUniforms['delta'] = { value: 0.0 };
+  velUniforms['separationDistance'] = { value: params.separation };
+  velUniforms['alignmentDistance']  = { value: params.alignment };
+  velUniforms['cohesionDistance']   = { value: params.cohesion };
+  velUniforms['predator']           = { value: new THREE.Vector3(10000, 10000, 0) };
+  velocityVar.material.defines.BOUNDS = BOUNDS.toFixed(2);
+  velocityVar.wrapS = THREE.RepeatWrapping;
+  velocityVar.wrapT = THREE.RepeatWrapping;
+  positionVar.wrapS = THREE.RepeatWrapping;
+  positionVar.wrapT = THREE.RepeatWrapping;
+
+  const err = gpuCompute.init();
+  if (err) console.error('GPUComputationRenderer:', err);
+
+  // Geometry — dummy positions required for draw count; real positions come from GPGPU texture
+  const geo     = new THREE.BufferGeometry();
+  const dummies = new Float32Array(dots * 3);
+  const refs    = new Float32Array(dots * 2);
+  for (let i = 0; i < dots; i++) {
+    refs[i * 2]     = (i % width + 0.5) / width;
+    refs[i * 2 + 1] = (Math.floor(i / width) + 0.5) / width;
+  }
+  geo.setAttribute('position',  new THREE.BufferAttribute(dummies, 3));
+  geo.setAttribute('reference', new THREE.BufferAttribute(refs, 2));
+
+  const dotUniforms = {
+    texturePosition: { value: null as THREE.Texture | null },
+    textureVelocity: { value: null as THREE.Texture | null },
+    dotSize:         { value: params.dotSize },
+  };
+
+  const mat    = new THREE.ShaderMaterial({ uniforms: dotUniforms, vertexShader: dotVS, fragmentShader: dotFS, transparent: true, depthWrite: false });
+  const points = new THREE.Points(geo, mat);
+  scene.add(points);
+
+  return { gpuCompute, positionVar, velocityVar, posUniforms, velUniforms, dotUniforms, points };
+}
+
+function destroySim(s: SimState) {
+  scene.remove(s.points);
+  (s.points.geometry as THREE.BufferGeometry).dispose();
+  (s.points.material as THREE.ShaderMaterial).dispose();
+}
+
+// Boot
+sim = initSim(48);
+
+// --- Input ---
+let mouseX = 10000, mouseY = 10000;
+let wHalfX = innerWidth / 2, wHalfY = innerHeight / 2;
+
+window.addEventListener('resize', () => {
+  wHalfX = innerWidth / 2; wHalfY = innerHeight / 2;
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+window.addEventListener('pointermove', (e) => {
+  if (!e.isPrimary) return;
+  mouseX = e.clientX - wHalfX;
+  mouseY = e.clientY - wHalfY;
+});
+window.addEventListener('touchmove', (e) => {
+  mouseX = e.touches[0].clientX - wHalfX;
+  mouseY = e.touches[0].clientY - wHalfY;
+}, { passive: true });
+window.addEventListener('pointerleave', () => { mouseX = 10000; mouseY = 10000; });
+
+// --- UI wiring ---
+const selCount = document.getElementById('sel-count') as HTMLSelectElement;
+const slSep    = document.getElementById('sl-sep')    as HTMLInputElement;
+const slAli    = document.getElementById('sl-ali')    as HTMLInputElement;
+const slCoh    = document.getElementById('sl-coh')    as HTMLInputElement;
+const slSz     = document.getElementById('sl-sz')     as HTMLInputElement;
+const valSep   = document.getElementById('val-sep')!;
+const valAli   = document.getElementById('val-ali')!;
+const valCoh   = document.getElementById('val-coh')!;
+const valSz    = document.getElementById('val-sz')!;
+
+selCount.addEventListener('change', () => {
+  const w = parseInt(selCount.value, 10);
+  if (sim) destroySim(sim);
+  sim = initSim(w);
+});
+
+slSep.addEventListener('input', () => {
+  params.separation = parseFloat(slSep.value);
+  valSep.textContent = slSep.value;
+  if (sim) (sim.velUniforms['separationDistance'] as { value: number }).value = params.separation;
+});
+slAli.addEventListener('input', () => {
+  params.alignment = parseFloat(slAli.value);
+  valAli.textContent = slAli.value;
+  if (sim) (sim.velUniforms['alignmentDistance'] as { value: number }).value = params.alignment;
+});
+slCoh.addEventListener('input', () => {
+  params.cohesion = parseFloat(slCoh.value);
+  valCoh.textContent = slCoh.value;
+  if (sim) (sim.velUniforms['cohesionDistance'] as { value: number }).value = params.cohesion;
+});
+slSz.addEventListener('input', () => {
+  params.dotSize = parseFloat(slSz.value);
+  valSz.textContent = params.dotSize.toFixed(1);
+  if (sim) sim.dotUniforms.dotSize.value = params.dotSize;
+});
+
+// Stop pointer events on the panel from reaching the canvas (avoids phantom predator jumps)
+document.getElementById('controls')!.addEventListener('pointermove', (e) => e.stopPropagation());
+
+// --- Render loop ---
+let last = performance.now();
+
+function animate() {
+  requestAnimationFrame(animate);
+  if (!sim) return;
+
+  const now   = performance.now();
+  let   delta = (now - last) / 1000;
+  if (delta > 1) delta = 1;
+  last = now;
+
+  (sim.posUniforms['time']  as { value: number }).value = now;
+  (sim.posUniforms['delta'] as { value: number }).value = delta;
+  (sim.velUniforms['time']  as { value: number }).value = now;
+  (sim.velUniforms['delta'] as { value: number }).value = delta;
+  (sim.velUniforms['predator'] as { value: THREE.Vector3 }).value.set(
+    0.5 * mouseX / wHalfX,
+    -0.5 * mouseY / wHalfY,
+    0
+  );
+
+  sim.gpuCompute.compute();
+  sim.dotUniforms.texturePosition.value = sim.gpuCompute.getCurrentRenderTarget(sim.positionVar).texture;
+  sim.dotUniforms.textureVelocity.value = sim.gpuCompute.getCurrentRenderTarget(sim.velocityVar).texture;
+
+  renderer.render(scene, camera);
+}
+
+animate();
+</script>
