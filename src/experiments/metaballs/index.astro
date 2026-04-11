@@ -16,8 +16,11 @@
   window.addEventListener('resize', resize);
 
   // --- grid resolution ---
-  const CELL = 8; // pixels per grid cell
-  const THRESHOLD = 1.0; // iso-surface threshold
+  const CELL = 8;
+  const THRESHOLD = 1.0;
+  const RESTITUTION = 0.70;  // energy kept after wall bounce
+  const DAMPING = 0.993;      // per-frame velocity decay
+  const MAX_SPEED = 18;       // px/frame cap
 
   // --- blobs ---
   interface Blob {
@@ -25,17 +28,17 @@
     y: number;
     vx: number;
     vy: number;
-    r: number;  // influence radius (strength = r²)
+    r: number;
     hue: number;
   }
 
   function makeBlob(): Blob {
     const r = 80 + Math.random() * 60;
     return {
-      x: 100 + Math.random() * (canvas.width - 200),
-      y: 100 + Math.random() * (canvas.height - 200),
-      vx: (Math.random() - 0.5) * 1.2,
-      vy: (Math.random() - 0.5) * 1.2,
+      x: r + Math.random() * (canvas.width  - r * 2),
+      y: r + Math.random() * (canvas.height - r * 2),
+      vx: (Math.random() - 0.5) * 2.5,
+      vy: (Math.random() - 0.5) * 2.5,
       r,
       hue: Math.random() * 360,
     };
@@ -43,16 +46,18 @@
 
   const blobs: Blob[] = Array.from({ length: 6 }, makeBlob);
 
-  // --- drag state ---
+  // --- drag state with velocity tracking ---
   let dragBlob: Blob | null = null;
   let dragOffX = 0, dragOffY = 0;
+  let prevDragX = 0, prevDragY = 0, prevDragT = 0;
+  let throwVx = 0, throwVy = 0;
 
   function nearestBlob(x: number, y: number): Blob | null {
     let best: Blob | null = null;
     let bestD = Infinity;
     for (const b of blobs) {
       const d = Math.hypot(b.x - x, b.y - y);
-      if (d < b.r * 0.7 && d < bestD) { bestD = d; best = b; }
+      if (d < b.r * 0.8 && d < bestD) { bestD = d; best = b; }
     }
     return best;
   }
@@ -64,11 +69,13 @@
       dragBlob = hit;
       dragOffX = hit.x - x;
       dragOffY = hit.y - y;
+      throwVx = 0; throwVy = 0;
+      prevDragX = x; prevDragY = y; prevDragT = performance.now();
     } else {
       const b = makeBlob();
       b.x = x; b.y = y;
-      b.vx = (Math.random() - 0.5) * 1.2;
-      b.vy = (Math.random() - 0.5) * 1.2;
+      b.vx = (Math.random() - 0.5) * 2.5;
+      b.vy = (Math.random() - 0.5) * 2.5;
       blobs.push(b);
     }
   });
@@ -77,10 +84,26 @@
     if (!dragBlob) return;
     dragBlob.x = e.clientX + dragOffX;
     dragBlob.y = e.clientY + dragOffY;
-    dragBlob.vx = 0; dragBlob.vy = 0;
+    const now = performance.now();
+    const dt = now - prevDragT;
+    if (dt > 0) {
+      // scale to ~16 ms frame units for consistent feel at any framerate
+      throwVx = (e.clientX - prevDragX) / dt * 16;
+      throwVy = (e.clientY - prevDragY) / dt * 16;
+    }
+    prevDragX = e.clientX; prevDragY = e.clientY; prevDragT = now;
   });
 
-  canvas.addEventListener('pointerup', () => { dragBlob = null; });
+  canvas.addEventListener('pointerup', () => {
+    if (dragBlob) {
+      // clamp throw so it doesn't rocket off screen
+      const spd = Math.hypot(throwVx, throwVy);
+      if (spd > MAX_SPEED) { throwVx *= MAX_SPEED / spd; throwVy *= MAX_SPEED / spd; }
+      dragBlob.vx = throwVx;
+      dragBlob.vy = throwVy;
+    }
+    dragBlob = null;
+  });
   canvas.addEventListener('pointercancel', () => { dragBlob = null; });
 
   // --- marching squares edge table ---
@@ -127,13 +150,32 @@
   ];
 
   // --- scalar field ---
+  // Each blob also has 4 mirror ghosts reflected across each wall.
+  // Their contribution makes the iso-surface stretch toward the wall —
+  // the "water sticking to glass" meniscus effect.
+  const WALL_GHOST_STRENGTH = 0.55; // fraction of real blob strength for ghosts
+  const WALL_ATTRACT_DIST = 160;    // only mirror when center is within this distance
+
   function field(px: number, py: number): number {
+    const W = canvas.width, H = canvas.height;
     let sum = 0;
     for (const b of blobs) {
+      // real blob
       const dx = px - b.x, dy = py - b.y;
       const d2 = dx * dx + dy * dy;
-      if (d2 < 1e-4) { sum += 4; continue; }
-      sum += (b.r * b.r) / d2;
+      sum += d2 < 1e-4 ? 4 : (b.r * b.r) / d2;
+
+      // mirror ghosts — only active when blob is near a wall
+      const str = b.r * b.r * WALL_GHOST_STRENGTH;
+      function ghost(gx: number, gy: number) {
+        const ddx = px - gx, ddy = py - gy;
+        const gd2 = ddx * ddx + ddy * ddy;
+        sum += gd2 < 1e-4 ? 4 * WALL_GHOST_STRENGTH : str / gd2;
+      }
+      if (b.x < WALL_ATTRACT_DIST)     ghost(-b.x, b.y);
+      if (b.x > W - WALL_ATTRACT_DIST) ghost(2 * W - b.x, b.y);
+      if (b.y < WALL_ATTRACT_DIST)     ghost(b.x, -b.y);
+      if (b.y > H - WALL_ATTRACT_DIST) ghost(b.x, 2 * H - b.y);
     }
     return sum;
   }
@@ -162,16 +204,26 @@
     const W = canvas.width;
     const H = canvas.height;
 
-    // move blobs
+    // move blobs (physics)
     for (const b of blobs) {
       if (b === dragBlob) continue;
+
+      b.vx *= DAMPING;
+      b.vy *= DAMPING;
+
+      // cap speed
+      const spd = Math.hypot(b.vx, b.vy);
+      if (spd > MAX_SPEED) { b.vx *= MAX_SPEED / spd; b.vy *= MAX_SPEED / spd; }
+
       b.x += b.vx;
       b.y += b.vy;
-      if (b.x < b.r * 0.3) { b.x = b.r * 0.3; b.vx = Math.abs(b.vx); }
-      if (b.x > W - b.r * 0.3) { b.x = W - b.r * 0.3; b.vx = -Math.abs(b.vx); }
-      if (b.y < b.r * 0.3) { b.y = b.r * 0.3; b.vy = Math.abs(b.vy); }
-      if (b.y > H - b.r * 0.3) { b.y = H - b.r * 0.3; b.vy = -Math.abs(b.vy); }
-      // drift hue slowly
+
+      // bounce off walls with restitution
+      if (b.x < 0)     { b.x = 0;  b.vx =  Math.abs(b.vx) * RESTITUTION; }
+      if (b.x > W)     { b.x = W;  b.vx = -Math.abs(b.vx) * RESTITUTION; }
+      if (b.y < 0)     { b.y = 0;  b.vy =  Math.abs(b.vy) * RESTITUTION; }
+      if (b.y > H)     { b.y = H;  b.vy = -Math.abs(b.vy) * RESTITUTION; }
+
       b.hue = (b.hue + 0.15) % 360;
     }
 
