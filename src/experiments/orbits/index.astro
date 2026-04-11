@@ -1,0 +1,248 @@
+---
+---
+
+<canvas id="canvas" style="display:block;width:100%;height:100%;"></canvas>
+
+<script>
+  const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+  const ctx = canvas.getContext('2d')!;
+  let W = window.innerWidth, H = window.innerHeight;
+  canvas.width = W;
+  canvas.height = H;
+
+  window.addEventListener('resize', () => {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W;
+    canvas.height = H;
+  });
+
+  const G = 1;
+  const SLING_SCALE = 2.5;
+  const SPAWN_MASS = 1000;
+  const TRAIL_FADE = 0.04;
+
+  // Pre-allocate acceleration buffers
+  const MAX_BODIES = 128;
+  const _ax = new Float64Array(MAX_BODIES);
+  const _ay = new Float64Array(MAX_BODIES);
+
+  interface Body {
+    x: number; y: number;
+    vx: number; vy: number;
+    mass: number; radius: number;
+    color: string;
+    dead: boolean;
+  }
+
+  const bodies: Body[] = [];
+
+  function mkBody(
+    x: number, y: number,
+    vx: number, vy: number,
+    mass: number, color: string,
+    radius?: number
+  ): Body {
+    return {
+      x, y, vx, vy, mass,
+      radius: radius ?? Math.max(3, Math.cbrt(mass) * 0.45),
+      color, dead: false,
+    };
+  }
+
+  // ── Initial bodies ───────────────────────────────────────────────────────
+  const originX = W / 2, originY = H / 2;
+  const D = Math.min(W, H);
+  const SM = 3_000_000;
+
+  bodies.push(mkBody(originX, originY, 0, 0, SM, '#ffe680', D * 0.025));
+
+  const initialOrbits = [
+    { r: D * 0.17, mass: 4000, color: '#4fc3f7' },
+    { r: D * 0.30, mass: 9000, color: '#ef9a9a' },
+    { r: D * 0.44, mass: 5000, color: '#a5d6a7' },
+  ];
+
+  for (const { r, mass, color } of initialOrbits) {
+    const a = Math.random() * Math.PI * 2;
+    const v = Math.sqrt(G * SM / r);
+    bodies.push(mkBody(
+      originX + Math.cos(a) * r,
+      originY + Math.sin(a) * r,
+      -Math.sin(a) * v,
+       Math.cos(a) * v,
+      mass, color
+    ));
+  }
+
+  // ── Physics ──────────────────────────────────────────────────────────────
+  function physics(dt: number) {
+    const SUB = 8, sdt = dt / SUB;
+    const n = bodies.length;
+
+    for (let s = 0; s < SUB; s++) {
+      _ax.fill(0, 0, n);
+      _ay.fill(0, 0, n);
+
+      for (let i = 0; i < n; i++) {
+        if (bodies[i].dead) continue;
+        for (let j = i + 1; j < n; j++) {
+          if (bodies[j].dead) continue;
+          const dx = bodies[j].x - bodies[i].x;
+          const dy = bodies[j].y - bodies[i].y;
+          const r2 = dx * dx + dy * dy;
+          const soft = Math.max(Math.sqrt(r2), 6);
+          const f = G / (soft * soft * soft);
+          const fi = f * bodies[j].mass;
+          const fj = f * bodies[i].mass;
+          _ax[i] += fi * dx; _ay[i] += fi * dy;
+          _ax[j] -= fj * dx; _ay[j] -= fj * dy;
+        }
+      }
+
+      for (let i = 0; i < n; i++) {
+        if (bodies[i].dead) continue;
+        bodies[i].vx += _ax[i] * sdt;
+        bodies[i].vy += _ay[i] * sdt;
+        bodies[i].x  += bodies[i].vx * sdt;
+        bodies[i].y  += bodies[i].vy * sdt;
+      }
+    }
+
+    // Merges
+    for (let i = 0; i < n; i++) {
+      if (bodies[i].dead) continue;
+      for (let j = i + 1; j < n; j++) {
+        if (bodies[j].dead) continue;
+        const dx = bodies[j].x - bodies[i].x;
+        const dy = bodies[j].y - bodies[i].y;
+        if (Math.hypot(dx, dy) < bodies[i].radius + bodies[j].radius) {
+          const tm = bodies[i].mass + bodies[j].mass;
+          bodies[i].vx = (bodies[i].vx * bodies[i].mass + bodies[j].vx * bodies[j].mass) / tm;
+          bodies[i].vy = (bodies[i].vy * bodies[i].mass + bodies[j].vy * bodies[j].mass) / tm;
+          bodies[i].x  = (bodies[i].x  * bodies[i].mass + bodies[j].x  * bodies[j].mass) / tm;
+          bodies[i].y  = (bodies[i].y  * bodies[i].mass + bodies[j].y  * bodies[j].mass) / tm;
+          bodies[i].mass = tm;
+          bodies[i].radius = Math.max(bodies[i].radius, Math.cbrt(tm) * 0.45);
+          bodies[j].dead = true;
+        }
+      }
+    }
+
+    // Remove dead + escaped
+    for (let i = bodies.length - 1; i >= 0; i--) {
+      if (bodies[i].dead) { bodies.splice(i, 1); continue; }
+      if (
+        Math.abs(bodies[i].x - originX) > W * 3 ||
+        Math.abs(bodies[i].y - originY) > H * 3
+      ) bodies.splice(i, 1);
+    }
+  }
+
+  // ── Draw ─────────────────────────────────────────────────────────────────
+  function draw() {
+    ctx.fillStyle = `rgba(0,0,0,${TRAIL_FADE})`;
+    ctx.fillRect(0, 0, W, H);
+
+    for (const b of bodies) {
+      // Glow
+      ctx.globalAlpha = 0.18;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.radius * 3, 0, Math.PI * 2);
+      ctx.fillStyle = b.color;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // Core
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+      ctx.fillStyle = b.color;
+      ctx.fill();
+    }
+  }
+
+  // ── Drag → spawn ─────────────────────────────────────────────────────────
+  const PALETTE = ['#f48fb1','#ce93d8','#81d4fa','#80cbc4','#fff176','#ffcc80','#ef9a9a','#b39ddb'];
+  let pidx = 0;
+  const nextColor = () => PALETTE[pidx++ % PALETTE.length];
+
+  let dragging = false;
+  let dragA = { x: 0, y: 0 };
+  let dragB = { x: 0, y: 0 };
+
+  function onDown(px: number, py: number) {
+    dragging = true;
+    dragA = { x: px, y: py };
+    dragB = { x: px, y: py };
+  }
+  function onMove(px: number, py: number) {
+    if (dragging) dragB = { x: px, y: py };
+  }
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    const vx = (dragB.x - dragA.x) * SLING_SCALE;
+    const vy = (dragB.y - dragA.y) * SLING_SCALE;
+    bodies.push(mkBody(dragA.x, dragA.y, vx, vy, SPAWN_MASS, nextColor()));
+  }
+
+  canvas.addEventListener('mousedown',  (e) => onDown(e.clientX, e.clientY));
+  canvas.addEventListener('mousemove',  (e) => onMove(e.clientX, e.clientY));
+  canvas.addEventListener('mouseup',    () => onUp());
+  canvas.addEventListener('mouseleave', () => { dragging = false; });
+
+  canvas.addEventListener('touchstart', (e) => { e.preventDefault(); onDown(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
+  canvas.addEventListener('touchmove',  (e) => { e.preventDefault(); onMove(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
+  canvas.addEventListener('touchend',   (e) => { e.preventDefault(); onUp(); }, { passive: false });
+
+  function drawDragPreview() {
+    if (!dragging) return;
+    const dx = dragB.x - dragA.x;
+    const dy = dragB.y - dragA.y;
+    const len = Math.hypot(dx, dy);
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.lineWidth = 1;
+
+    // Crosshair at origin
+    ctx.beginPath();
+    ctx.moveTo(dragA.x - 8, dragA.y); ctx.lineTo(dragA.x + 8, dragA.y);
+    ctx.moveTo(dragA.x, dragA.y - 8); ctx.lineTo(dragA.x, dragA.y + 8);
+    ctx.stroke();
+
+    if (len > 5) {
+      // Velocity line
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(dragA.x, dragA.y);
+      ctx.lineTo(dragB.x, dragB.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Arrowhead at tip
+      const nx = dx / len, ny = dy / len;
+      const px = -ny, py = nx;
+      ctx.beginPath();
+      ctx.moveTo(dragB.x, dragB.y);
+      ctx.lineTo(dragB.x - nx * 10 + px * 5, dragB.y - ny * 10 + py * 5);
+      ctx.moveTo(dragB.x, dragB.y);
+      ctx.lineTo(dragB.x - nx * 10 - px * 5, dragB.y - ny * 10 - py * 5);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  // ── Loop ─────────────────────────────────────────────────────────────────
+  let last = 0;
+  function loop(t: number) {
+    const dt = Math.min((t - last) / 1000, 0.05);
+    last = t;
+    if (dt > 0) physics(dt);
+    draw();
+    drawDragPreview();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+</script>
