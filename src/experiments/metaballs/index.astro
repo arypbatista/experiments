@@ -1,0 +1,278 @@
+---
+---
+
+<canvas id="canvas" style="display:block;width:100%;height:100%;"></canvas>
+
+<script>
+  const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+  const ctx = canvas.getContext('2d')!;
+
+  // --- resize ---
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // --- grid resolution ---
+  const CELL = 8; // pixels per grid cell
+  const THRESHOLD = 1.0; // iso-surface threshold
+
+  // --- blobs ---
+  interface Blob {
+    x: number;
+    y: number;
+    vx: number;
+    vy: number;
+    r: number;  // influence radius (strength = r²)
+    hue: number;
+  }
+
+  function makeBlob(): Blob {
+    const r = 80 + Math.random() * 60;
+    return {
+      x: 100 + Math.random() * (canvas.width - 200),
+      y: 100 + Math.random() * (canvas.height - 200),
+      vx: (Math.random() - 0.5) * 1.2,
+      vy: (Math.random() - 0.5) * 1.2,
+      r,
+      hue: Math.random() * 360,
+    };
+  }
+
+  const blobs: Blob[] = Array.from({ length: 6 }, makeBlob);
+
+  // --- drag state ---
+  let dragBlob: Blob | null = null;
+  let dragOffX = 0, dragOffY = 0;
+
+  function nearestBlob(x: number, y: number): Blob | null {
+    let best: Blob | null = null;
+    let bestD = Infinity;
+    for (const b of blobs) {
+      const d = Math.hypot(b.x - x, b.y - y);
+      if (d < b.r * 0.7 && d < bestD) { bestD = d; best = b; }
+    }
+    return best;
+  }
+
+  canvas.addEventListener('pointerdown', (e) => {
+    const x = e.clientX, y = e.clientY;
+    const hit = nearestBlob(x, y);
+    if (hit) {
+      dragBlob = hit;
+      dragOffX = hit.x - x;
+      dragOffY = hit.y - y;
+    } else {
+      const b = makeBlob();
+      b.x = x; b.y = y;
+      b.vx = (Math.random() - 0.5) * 1.2;
+      b.vy = (Math.random() - 0.5) * 1.2;
+      blobs.push(b);
+    }
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    if (!dragBlob) return;
+    dragBlob.x = e.clientX + dragOffX;
+    dragBlob.y = e.clientY + dragOffY;
+    dragBlob.vx = 0; dragBlob.vy = 0;
+  });
+
+  canvas.addEventListener('pointerup', () => { dragBlob = null; });
+  canvas.addEventListener('pointercancel', () => { dragBlob = null; });
+
+  // --- marching squares edge table ---
+  // Each cell has 4 corners (TL, TR, BR, BL). Index 0..15.
+  // We return line segment(s) as pairs of lerp'd edge points.
+  // Edges: 0=top, 1=right, 2=bottom, 3=left
+  const MS_EDGES: [number, number][][] = [
+    [],              // 0000
+    [[3, 2]],        // 0001 BL
+    [[2, 1]],        // 0010 BR
+    [[3, 1]],        // 0011 BL+BR
+    [[1, 0]],        // 0100 TR
+    [[3, 0], [1, 2]],// 0101 saddle
+    [[2, 0]],        // 0110 TR+BR
+    [[3, 0]],        // 0111 BL+BR+TR
+    [[0, 3]],        // 1000 TL
+    [[0, 2]],        // 1001 TL+BL
+    [[0, 1], [2, 3]],// 1010 saddle
+    [[0, 1]],        // 1011 TL+BL+BR — wait, recompute below
+    [[1, 3]],        // 1100 TL+TR
+    [[1, 2]],        // 1101 TL+TR+BL
+    [[2, 3]],        // 1110 TL+TR+BR
+    [],              // 1111
+  ];
+  // Fix cases 11 and 13 (missed in above shorthand)
+  MS_EDGES[11] = [[0, 1]];  // TL+BL+BR: segment top→right
+  MS_EDGES[13] = [[1, 2]];  // TL+TR+BL: segment right→bottom
+
+  // For each edge index return the two corner indices it connects
+  // Corners: 0=TL,1=TR,2=BR,3=BL  (row-major, y-down)
+  const EDGE_CORNERS: [number, number][] = [
+    [0, 1], // top:   TL–TR
+    [1, 2], // right: TR–BR
+    [2, 3], // bot:   BR–BL
+    [3, 0], // left:  BL–TL
+  ];
+
+  // Corner offsets [dx, dy] within a cell
+  const CORNER_OFFSET: [number, number][] = [
+    [0, 0], // TL
+    [1, 0], // TR
+    [1, 1], // BR
+    [0, 1], // BL
+  ];
+
+  // --- scalar field ---
+  function field(px: number, py: number): number {
+    let sum = 0;
+    for (const b of blobs) {
+      const dx = px - b.x, dy = py - b.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < 1e-4) { sum += 4; continue; }
+      sum += (b.r * b.r) / d2;
+    }
+    return sum;
+  }
+
+  // Dominant hue at a point (weighted by each blob's contribution)
+  function dominantHue(px: number, py: number): number {
+    let wx = 0, wy = 0, total = 0;
+    for (const b of blobs) {
+      const dx = px - b.x, dy = py - b.y;
+      const d2 = Math.max(dx * dx + dy * dy, 1e-4);
+      const w = (b.r * b.r) / d2;
+      const rad = (b.hue * Math.PI) / 180;
+      wx += Math.cos(rad) * w;
+      wy += Math.sin(rad) * w;
+      total += w;
+    }
+    if (total === 0) return 0;
+    return ((Math.atan2(wy / total, wx / total) * 180) / Math.PI + 360) % 360;
+  }
+
+  // --- render ---
+  let t = 0;
+
+  function draw() {
+    t++;
+    const W = canvas.width;
+    const H = canvas.height;
+
+    // move blobs
+    for (const b of blobs) {
+      if (b === dragBlob) continue;
+      b.x += b.vx;
+      b.y += b.vy;
+      if (b.x < b.r * 0.3) { b.x = b.r * 0.3; b.vx = Math.abs(b.vx); }
+      if (b.x > W - b.r * 0.3) { b.x = W - b.r * 0.3; b.vx = -Math.abs(b.vx); }
+      if (b.y < b.r * 0.3) { b.y = b.r * 0.3; b.vy = Math.abs(b.vy); }
+      if (b.y > H - b.r * 0.3) { b.y = H - b.r * 0.3; b.vy = -Math.abs(b.vy); }
+      // drift hue slowly
+      b.hue = (b.hue + 0.15) % 360;
+    }
+
+    // clear
+    ctx.fillStyle = '#0a0a0f';
+    ctx.fillRect(0, 0, W, H);
+
+    const cols = Math.ceil(W / CELL) + 1;
+    const rows = Math.ceil(H / CELL) + 1;
+
+    // pre-sample scalar field on grid
+    const grid = new Float32Array(cols * rows);
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        grid[row * cols + col] = field(col * CELL, row * CELL);
+      }
+    }
+
+    // collect all iso-contour segments
+    type Seg = { x1: number; y1: number; x2: number; y2: number; hue: number };
+    const segs: Seg[] = [];
+
+    for (let row = 0; row < rows - 1; row++) {
+      for (let col = 0; col < cols - 1; col++) {
+        const x0 = col * CELL;
+        const y0 = row * CELL;
+
+        // corner values
+        const cv: number[] = [
+          grid[row * cols + col],         // TL
+          grid[row * cols + col + 1],     // TR
+          grid[(row + 1) * cols + col + 1], // BR
+          grid[(row + 1) * cols + col],   // BL
+        ];
+
+        // build index
+        let idx = 0;
+        if (cv[0] >= THRESHOLD) idx |= 8;
+        if (cv[1] >= THRESHOLD) idx |= 4;
+        if (cv[2] >= THRESHOLD) idx |= 2;
+        if (cv[3] >= THRESHOLD) idx |= 1;
+
+        const edges = MS_EDGES[idx];
+        if (!edges.length) continue;
+
+        // lerp edge intersection
+        function edgePt(edgeIdx: number): [number, number] {
+          const [ca, cb] = EDGE_CORNERS[edgeIdx];
+          const [dxa, dya] = CORNER_OFFSET[ca];
+          const [dxb, dyb] = CORNER_OFFSET[cb];
+          const va = cv[ca], vb = cv[cb];
+          const t = (va === vb) ? 0.5 : (THRESHOLD - va) / (vb - va);
+          return [x0 + (dxa + (dxb - dxa) * t) * CELL,
+                  y0 + (dya + (dyb - dya) * t) * CELL];
+        }
+
+        for (const [e0, e1] of edges) {
+          const [x1, y1] = edgePt(e0);
+          const [x2, y2] = edgePt(e1);
+          const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+          segs.push({ x1, y1, x2, y2, hue: dominantHue(mx, my) });
+        }
+      }
+    }
+
+    // draw filled blob interior using OffscreenCanvas flood-like approach:
+    // scan each cell for fully-inside corners and fill them
+    for (let row = 0; row < rows - 1; row++) {
+      for (let col = 0; col < cols - 1; col++) {
+        const cv0 = grid[row * cols + col];
+        const cv1 = grid[row * cols + col + 1];
+        const cv2 = grid[(row + 1) * cols + col + 1];
+        const cv3 = grid[(row + 1) * cols + col];
+        const inside = (cv0 >= THRESHOLD ? 1 : 0)
+                     + (cv1 >= THRESHOLD ? 1 : 0)
+                     + (cv2 >= THRESHOLD ? 1 : 0)
+                     + (cv3 >= THRESHOLD ? 1 : 0);
+        if (inside === 0) continue;
+
+        const cx = col * CELL + CELL / 2;
+        const cy = row * CELL + CELL / 2;
+        const hue = dominantHue(cx, cy);
+        const alpha = Math.min(1, (inside / 4) * 1.5);
+        ctx.fillStyle = `hsla(${hue},70%,55%,${alpha})`;
+        ctx.fillRect(col * CELL, row * CELL, CELL, CELL);
+      }
+    }
+
+    // draw iso-contour lines (bright edge)
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    for (const s of segs) {
+      ctx.strokeStyle = `hsl(${s.hue},90%,80%)`;
+      ctx.beginPath();
+      ctx.moveTo(s.x1, s.y1);
+      ctx.lineTo(s.x2, s.y2);
+      ctx.stroke();
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  draw();
+</script>
