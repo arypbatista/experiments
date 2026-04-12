@@ -349,28 +349,24 @@
             if (dist2 <= 4) continue; // leave immediate neighbors alone
             if (Math.random() > Math.min(ATTRACTOR_STRENGTH / dist2, 0.9))
               continue;
-            // Try to move one step toward attractor, with diagonal fallback
-            const sdx = -Math.sign(dx),
-              sdy = -Math.sign(dy);
-            const dg = Math.random() < 0.5 ? 1 : -1;
-            const candidates: [number, number][] =
-              sdx !== 0 && sdy !== 0
-                ? [
-                    [sdx, sdy],
-                    [sdx, 0],
-                    [0, sdy],
-                  ]
-                : sdx !== 0
-                  ? [
-                      [sdx, 0],
-                      [0, dg],
-                      [0, -dg],
-                    ] // blocked horizontally → slide up/down
-                  : [
-                      [0, sdy],
-                      [dg, 0],
-                      [-dg, 0],
-                    ]; // blocked vertically → slide left/right
+            // Step toward attractor; if blocked, slide tangentially along the ring.
+            const sdx = -Math.sign(dx), sdy = -Math.sign(dy);
+            const absDx = Math.abs(dx), absDy = Math.abs(dy);
+            // Inward: single-axis step (magnitude 1) weighted by component size.
+            // Avoids diagonal √2 bias that causes a diamond shape.
+            const moveInX = sdx !== 0 && (sdy === 0 || Math.random() < absDx / (absDx + absDy));
+            const ix = moveInX ? sdx : 0;
+            const iy = moveInX ? 0 : sdy;
+            // Tangent: nearest integer to the true perpendicular (-dy,dx)/dist
+            const dist = Math.sqrt(dist2);
+            const t1x = Math.round(-dy / dist), t1y = Math.round(dx / dist);
+            const t2x = -t1x, t2y = -t1y;
+            const flip = Math.random() < 0.5;
+            const candidates: [number, number][] = [
+              [ix, iy],
+              flip ? [t1x, t1y] : [t2x, t2y],
+              flip ? [t2x, t2y] : [t1x, t1y],
+            ];
             for (const [mx, my] of candidates) {
               const nx = px + mx,
                 ny = py + my;
