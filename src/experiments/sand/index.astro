@@ -14,11 +14,17 @@
   <button class="mat-btn" data-mat="3">FIRE [3]</button>
   <button class="mat-btn" data-mat="4">WALL [4]</button>
   <button class="mat-btn" data-mat="6">SOIL [6]</button>
+  <button class="mat-btn" data-mat="7">GRAVITY [5]</button>
   <button class="mat-btn" data-mat="0">ERASE [E]</button>
   <div class="divider"></div>
   <label>
     <span id="brush-label">brush: 5</span>
     <input id="brush-range" type="range" min="1" max="20" step="1" value="5" />
+  </label>
+  <div class="divider"></div>
+  <label class="toggle-label">
+    <input id="gravity-toggle" type="checkbox" />
+    <span>global gravity</span>
   </label>
   <div class="divider"></div>
   <button id="btn-clear">CLEAR [C]</button>
@@ -82,6 +88,16 @@
     accent-color: white;
     width: 100%;
   }
+  .toggle-label {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
+  .toggle-label input {
+    accent-color: white;
+    cursor: pointer;
+  }
 </style>
 
 <script>
@@ -93,7 +109,8 @@
     FIRE = 3,
     WALL = 4,
     SMOKE = 5,
-    SOIL = 6;
+    SOIL = 6,
+    ATTRACTOR = 7;
 
   // ── Canvas setup ────────────────────────────────────────────────────────────
   const canvas = document.getElementById("canvas") as HTMLCanvasElement;
@@ -184,6 +201,10 @@
     gravity: number;
     density: number;
     ephemeral: boolean;
+    brushRadius?: number;
+    deathMaterial?: number;
+    deathLife?: () => number;
+    sideEffect?: (x: number, y: number, idx: number) => void;
   };
 
   const defaultMaterialConfig: MaterialConfig = {
@@ -193,13 +214,49 @@
     ephemeral: false,
   };
 
+  function fireSideEffect(x: number, y: number, idx: number) {
+    const nbrs = [
+      y > 0 ? idx - COLS : -1,
+      y + 1 < ROWS ? idx + COLS : -1,
+      x > 0 ? idx - 1 : -1,
+      x + 1 < COLS ? idx + 1 : -1,
+    ];
+    for (const ni of nbrs) {
+      if (ni < 0) continue;
+      const nt = grid[ni];
+      if (nt === SAND && Math.random() < 0.015) {
+        place(ni, FIRE, undefined, (30 + Math.random() * 60) | 0);
+        moved[ni] = 1;
+      } else if (nt === WATER) {
+        grid[idx] = SMOKE;
+        life[idx] = (8 + Math.random() * 12) | 0;
+        return;
+      }
+    }
+    if (y > 0 && Math.random() < 0.18) {
+      const above = idx - COLS;
+      if (grid[above] === EMPTY) {
+        place(above, SMOKE, undefined, (20 + Math.random() * 35) | 0);
+        moved[above] = 1;
+      }
+    }
+  }
+
   const materialConfigs: { [key: number]: Partial<MaterialConfig> } = {
     [SAND]: {},
     [SOIL]: { density: 15 },
     [WATER]: { sidewaysFlow: true, density: 2 },
-    [FIRE]: { ephemeral: true, density: 1 },
+    [FIRE]: {
+      gravity: 0,
+      ephemeral: true,
+      density: 1,
+      deathMaterial: SMOKE,
+      deathLife: () => (30 + Math.random() * 40) | 0,
+      sideEffect: fireSideEffect,
+    },
     [WALL]: { density: 20 },
     [SMOKE]: { gravity: -1, ephemeral: true, density: 1 },
+    [ATTRACTOR]: { gravity: 0, density: 30, brushRadius: 1 },
   };
 
   function getMaterialConfig(material: number): MaterialConfig {
@@ -220,11 +277,19 @@
     const materialConfig = getMaterialConfig(material);
 
     if (materialConfig.ephemeral && --life[idx] <= 0) {
-      grid[idx] = EMPTY;
+      const death = materialConfig.deathMaterial ?? EMPTY;
+      grid[idx] = death;
+      if (materialConfig.deathLife) life[idx] = materialConfig.deathLife();
+      if (death !== EMPTY) colr[idx] = (Math.random() * 256) | 0;
       return;
     }
 
-    if (materialConfig.gravity != 0) {
+    if (materialConfig.sideEffect) {
+      materialConfig.sideEffect(x, y, idx);
+      if (grid[idx] !== material) return;
+    }
+
+    if (globalGravity && materialConfig.gravity != 0) {
       if (materialConfig.gravity > 0 ? y + 1 >= ROWS : y <= 0) return;
 
       const below = idx + COLS * Math.sign(materialConfig.gravity);
@@ -264,48 +329,58 @@
     }
   }
 
-  function updateFire(x: number, y: number, idx: number) {
-    if (--life[idx] <= 0) {
-      grid[idx] = SMOKE;
-      life[idx] = (30 + Math.random() * 40) | 0;
-      colr[idx] = (Math.random() * 256) | 0;
-      return;
-    }
+  const ATTRACTOR_RADIUS = 100;
+  const ATTRACTOR_STRENGTH = 300;
 
-    // Spread to sand; extinguished by water
-    const nbrs = [
-      y > 0 ? idx - COLS : -1,
-      y + 1 < ROWS ? idx + COLS : -1,
-      x > 0 ? idx - 1 : -1,
-      x + 1 < COLS ? idx + 1 : -1,
-    ];
-    for (const ni of nbrs) {
-      if (ni < 0) continue;
-      const nt = grid[ni];
-      if (nt === SAND && Math.random() < 0.015) {
-        place(ni, FIRE, undefined, (30 + Math.random() * 60) | 0);
-        moved[ni] = 1;
-      } else if (nt === WATER) {
-        grid[idx] = SMOKE;
-        life[idx] = (8 + Math.random() * 12) | 0;
-        return;
-      }
-    }
-
-    // Emit smoke upward
-    if (y > 0 && Math.random() < 0.18) {
-      const above = idx - COLS;
-      if (grid[above] === EMPTY) {
-        place(above, SMOKE, undefined, (20 + Math.random() * 35) | 0);
-        moved[above] = 1;
+  function applyAttractors() {
+    for (let ay = 0; ay < ROWS; ay++) {
+      for (let ax = 0; ax < COLS; ax++) {
+        if (grid[ay * COLS + ax] !== ATTRACTOR) continue;
+        for (let dy = -ATTRACTOR_RADIUS; dy <= ATTRACTOR_RADIUS; dy++) {
+          for (let dx = -ATTRACTOR_RADIUS; dx <= ATTRACTOR_RADIUS; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const px = ax + dx,
+              py = ay + dy;
+            if (px < 0 || px >= COLS || py < 0 || py >= ROWS) continue;
+            const pidx = py * COLS + px;
+            const pt = grid[pidx];
+            if (pt === EMPTY || pt === WALL || pt === ATTRACTOR) continue;
+            const dist2 = dx * dx + dy * dy;
+            if (Math.random() > Math.min(ATTRACTOR_STRENGTH / dist2, 0.9))
+              continue;
+            // Try to move one step toward attractor
+            const sdx = -Math.sign(dx),
+              sdy = -Math.sign(dy);
+            const candidates: [number, number][] =
+              sdx !== 0 && sdy !== 0
+                ? [
+                    [sdx, sdy],
+                    [sdx, 0],
+                    [0, sdy],
+                  ]
+                : [[sdx, sdy]];
+            for (const [mx, my] of candidates) {
+              const nx = px + mx,
+                ny = py + my;
+              if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) continue;
+              const nidx = ny * COLS + nx;
+              if (grid[nidx] === EMPTY) {
+                swapCells(pidx, nidx);
+                moved[nidx] = 1;
+                break;
+              }
+            }
+          }
+        }
       }
     }
   }
 
   function step() {
     moved.fill(0);
+    applyAttractors();
 
-    // Bottom-to-top: sand + water (gravity)
+    // Bottom-to-top: falling particles (gravity > 0)
     for (let y = ROWS - 1; y >= 0; y--) {
       const ltr = (frameCount + y) % 2 === 0;
       for (let xi = 0; xi < COLS; xi++) {
@@ -313,21 +388,19 @@
         const idx = y * COLS + x;
         if (moved[idx]) continue;
         const t = grid[idx];
-        if (t === SAND) updateParticle(SAND, x, y, idx);
-        else if (t === WATER) updateParticle(WATER, x, y, idx);
-        else if (t === WALL) updateParticle(WALL, x, y, idx);
-        else if (t === SOIL) updateParticle(SOIL, x, y, idx);
+        if (t === EMPTY) continue;
+        if (getMaterialConfig(t).gravity > 0) updateParticle(t, x, y, idx);
       }
     }
 
-    // Top-to-bottom: fire + smoke (rising)
+    // Top-to-bottom: rising/static particles (gravity <= 0)
     for (let y = 0; y < ROWS; y++) {
       for (let x = 0; x < COLS; x++) {
         const idx = y * COLS + x;
         if (moved[idx]) continue;
         const t = grid[idx];
-        if (t === FIRE) updateFire(x, y, idx);
-        else if (t === SMOKE) updateParticle(SMOKE, x, y, idx);
+        if (t === EMPTY) continue;
+        if (getMaterialConfig(t).gravity <= 0) updateParticle(t, x, y, idx);
       }
     }
   }
@@ -375,6 +448,8 @@
         const alpha = Math.min(220, (l / 60) * 220) | 0;
         const s = 130 + (v >> 4);
         px = ((alpha << 24) | (s << 16) | (s << 8) | s) >>> 0;
+      } else if (t === ATTRACTOR) {
+        px = (0xff000000 | (40 << 16) | (20 << 8) | 60) >>> 0;
       }
 
       pixels[i] = px;
@@ -383,6 +458,8 @@
   }
 
   // ── Drawing input ───────────────────────────────────────────────────────────
+  let globalGravity = false;
+
   let drawing = false;
   let currentMat = SAND;
   let brushRadius = 5;
@@ -396,7 +473,10 @@
 
   function drawAt(cx: number, cy: number) {
     const { gx, gy } = screenToGrid(cx, cy);
-    const r = brushRadius;
+
+    const materialConfig = getMaterialConfig(currentMat); // to ensure currentMat is valid
+
+    const r = materialConfig.brushRadius ?? brushRadius;
     const r2 = r * r;
     for (let dy = -r; dy <= r; dy++) {
       for (let dx = -r; dx <= r; dx++) {
@@ -412,6 +492,8 @@
         } else if (grid[idx] !== WALL || currentMat === WALL) {
           if (currentMat === FIRE) {
             place(idx, FIRE, undefined, (40 + Math.random() * 60) | 0);
+          } else if (currentMat === ATTRACTOR) {
+            place(idx, ATTRACTOR, 0, 0);
           } else {
             place(idx, currentMat);
           }
@@ -488,6 +570,14 @@
     brushLabel.textContent = `brush: ${brushRadius}`;
   });
 
+  const gravityToggle = document.getElementById(
+    "gravity-toggle",
+  ) as HTMLInputElement;
+  gravityToggle.checked = globalGravity;
+  gravityToggle.addEventListener("change", () => {
+    globalGravity = gravityToggle.checked;
+  });
+
   window.addEventListener("keydown", (e) => {
     switch (e.key) {
       case "1":
@@ -501,6 +591,9 @@
         break;
       case "4":
         setMaterial(WALL);
+        break;
+      case "5":
+        setMaterial(ATTRACTOR);
         break;
       case "6":
         setMaterial(SOIL);
