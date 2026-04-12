@@ -1,0 +1,328 @@
+---
+// No layout — ExperimentLayout applied by [slug].astro
+---
+
+<canvas id="canvas" style="display:block;width:100%;height:100%;"></canvas>
+
+<div
+  id="controls"
+  style="position:fixed;top:64px;right:24px;font-family:monospace;font-size:11px;color:rgba(255,255,255,0.7);display:flex;flex-direction:column;gap:8px;min-width:200px;"
+>
+  <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:2px;">
+    <span style="font-size:12px;color:rgba(255,255,255,0.9);letter-spacing:0.06em;">KALEIDOSCOPE</span>
+    <span style="font-size:10px;color:rgba(255,255,255,0.4);line-height:1.4;">drag canvas to spin</span>
+  </div>
+
+  <select
+    id="preset-select"
+    style="background:#000;border:1px solid rgba(255,255,255,0.3);color:rgba(255,255,255,0.8);font-family:monospace;font-size:11px;padding:4px 6px;cursor:pointer;width:100%;"
+  >
+    <option value="aurora" selected>Aurora</option>
+    <option value="fire">Fire</option>
+    <option value="nebula">Nebula</option>
+  </select>
+
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="seg-label">segments: 17</span>
+    <input id="seg-range" type="range" min="2" max="24" step="1" value="17" style="accent-color:white;width:100%;" />
+  </label>
+
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="speed-label">speed: 0.46</span>
+    <input id="speed-range" type="range" min="0" max="1" step="0.01" value="0.46" style="accent-color:white;width:100%;" />
+  </label>
+
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="zoom-label">detail: 0.7</span>
+    <input id="zoom-range" type="range" min="0.5" max="5" step="0.1" value="0.7" style="accent-color:white;width:100%;" />
+  </label>
+</div>
+
+<div style="position:fixed;bottom:24px;right:24px;">
+  <button
+    id="webcam-btn"
+    style="background:transparent;border:1px solid rgba(255,255,255,0.4);color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+    >WEBCAM [W]</button
+  >
+</div>
+
+<script>
+  import * as THREE from "three";
+
+  // ── Source canvas (procedural pattern) ────────────────────────────────────────
+  const SRC = 256;
+  const srcCanvas = document.createElement("canvas");
+  srcCanvas.width = SRC;
+  srcCanvas.height = SRC;
+  const sc = srcCanvas.getContext("2d")!;
+
+  // ── THREE.js renderer ─────────────────────────────────────────────────────────
+  const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+  let W = window.innerWidth,
+    H = window.innerHeight;
+
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
+  renderer.setSize(W, H);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+  const tex = new THREE.CanvasTexture(srcCanvas);
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+
+  // ── Shaders ───────────────────────────────────────────────────────────────────
+  const vertShader = /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = vec4(position.xy, 0.0, 1.0);
+    }
+  `;
+
+  const fragShader = /* glsl */ `
+    uniform sampler2D uTex;
+    uniform float uN;
+    uniform float uRot;
+    uniform float uZoom;
+    uniform float uAspect;
+    varying vec2 vUv;
+
+    const float TWO_PI = 6.28318530718;
+
+    void main() {
+      vec2 uv = vUv - 0.5;
+      // Aspect-correct so the circle is round in screen space
+      vec2 suv = vec2(uv.x * uAspect, uv.y);
+      float r = length(suv);
+
+      if (r > 0.5) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+      }
+
+      float theta = atan(suv.y, suv.x) + uRot;
+      float seg = TWO_PI / uN;
+      // Fold angle into [0, seg] then mirror into [0, seg/2]
+      theta = mod(theta, seg);
+      if (theta > seg * 0.5) theta = seg - theta;
+
+      // Sample source at the folded polar coordinate
+      vec2 srcPt = vec2(cos(theta), sin(theta)) * r * uZoom + 0.5;
+      gl_FragColor = texture2D(uTex, fract(srcPt));
+    }
+  `;
+
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTex: { value: tex },
+      uN: { value: 17.0 },
+      uRot: { value: 0.0 },
+      uZoom: { value: 0.7 },
+      uAspect: { value: W / H },
+    },
+    vertexShader: vertShader,
+    fragmentShader: fragShader,
+  });
+
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+  scene.add(mesh);
+
+  window.addEventListener("resize", () => {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    renderer.setSize(W, H);
+    mat.uniforms.uAspect.value = W / H;
+  });
+
+  // ── Procedural blob presets ───────────────────────────────────────────────────
+  interface Blob {
+    ax: number; ay: number; // lissajous amplitude
+    fx: number; fy: number; // lissajous frequency
+    px: number; py: number; // phase offset
+    r: number;              // gradient radius
+    h: number;              // base hue
+    dh: number;             // hue drift speed (deg/s)
+  }
+
+  const PRESETS: Record<string, Blob[]> = {
+    aurora: [
+      { ax: 90, ay: 80, fx: 0.31, fy: 0.47, px: 0.00, py: 0.00, r: 110, h: 160, dh: 15 },
+      { ax: 100, ay: 65, fx: 0.73, fy: 0.22, px: 1.50, py: 2.10, r:  95, h: 195, dh: 20 },
+      { ax: 65, ay: 100, fx: 0.53, fy: 0.81, px: 3.20, py: 0.80, r:  85, h: 275, dh: 10 },
+      { ax: 85, ay:  70, fx: 0.19, fy: 0.61, px: 5.00, py: 4.20, r:  75, h: 120, dh: 25 },
+      { ax: 75, ay:  95, fx: 0.62, fy: 0.35, px: 2.00, py: 3.50, r:  90, h: 240, dh: 18 },
+    ],
+    fire: [
+      { ax:  80, ay:  80, fx: 0.42, fy: 0.58, px: 0.00, py: 0.00, r: 110, h:  15, dh: 30 },
+      { ax: 100, ay:  60, fx: 0.81, fy: 0.31, px: 1.00, py: 1.50, r:  95, h:  35, dh: 20 },
+      { ax:  60, ay: 100, fx: 0.63, fy: 0.87, px: 2.50, py: 0.50, r:  85, h: 355, dh: 40 },
+      { ax:  90, ay:  70, fx: 0.28, fy: 0.52, px: 4.50, py: 3.00, r:  75, h:  50, dh: 25 },
+      { ax:  70, ay:  90, fx: 0.71, fy: 0.43, px: 3.00, py: 4.50, r:  90, h:   0, dh: 35 },
+    ],
+    nebula: [
+      { ax:  80, ay:  80, fx: 0.23, fy: 0.41, px: 0.00, py: 0.00, r: 110, h: 270, dh: 12 },
+      { ax: 100, ay:  65, fx: 0.61, fy: 0.19, px: 2.00, py: 1.00, r:  95, h: 300, dh: 18 },
+      { ax:  65, ay: 100, fx: 0.44, fy: 0.73, px: 4.00, py: 2.00, r:  85, h: 320, dh: 15 },
+      { ax:  90, ay:  70, fx: 0.12, fy: 0.55, px: 1.50, py: 5.00, r:  75, h: 180, dh: 20 },
+      { ax:  75, ay:  95, fx: 0.55, fy: 0.31, px: 3.00, py: 3.00, r:  90, h: 200, dh: 22 },
+    ],
+  };
+
+  let blobs = PRESETS.aurora;
+
+  function drawSource(t: number) {
+    sc.fillStyle = "#060010";
+    sc.fillRect(0, 0, SRC, SRC);
+    sc.globalCompositeOperation = "screen";
+    for (const b of blobs) {
+      const x = SRC / 2 + Math.sin(t * b.fx + b.px) * b.ax;
+      const y = SRC / 2 + Math.cos(t * b.fy + b.py) * b.ay;
+      const hue = ((b.h + t * b.dh) % 360 + 360) % 360;
+      const grad = sc.createRadialGradient(x, y, 0, x, y, b.r);
+      grad.addColorStop(0,   `hsla(${hue},100%,65%,0.9)`);
+      grad.addColorStop(0.4, `hsla(${(hue + 40) % 360},100%,45%,0.5)`);
+      grad.addColorStop(1,   `rgba(0,0,0,0)`);
+      sc.fillStyle = grad;
+      sc.fillRect(0, 0, SRC, SRC);
+    }
+    sc.globalCompositeOperation = "source-over";
+  }
+
+  // ── Webcam ────────────────────────────────────────────────────────────────────
+  let webcamActive = false;
+  let videoEl: HTMLVideoElement | null = null;
+  let webcamTex: THREE.VideoTexture | null = null;
+  const webcamBtn = document.getElementById("webcam-btn")!;
+
+  async function toggleWebcam() {
+    if (webcamActive) {
+      webcamActive = false;
+      if (videoEl?.srcObject) {
+        (videoEl.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
+      }
+      videoEl = null;
+      webcamTex?.dispose();
+      webcamTex = null;
+      mat.uniforms.uTex.value = tex;
+      webcamBtn.textContent = "WEBCAM [W]";
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+      });
+      videoEl = document.createElement("video");
+      videoEl.srcObject = stream;
+      videoEl.muted = true;
+      await videoEl.play();
+      webcamTex = new THREE.VideoTexture(videoEl);
+      webcamTex.minFilter = THREE.LinearFilter;
+      webcamTex.wrapS = THREE.RepeatWrapping;
+      webcamTex.wrapT = THREE.RepeatWrapping;
+      mat.uniforms.uTex.value = webcamTex;
+      webcamActive = true;
+      webcamBtn.textContent = "STOP [W]";
+    } catch {
+      webcamBtn.textContent = "NO CAM";
+      setTimeout(() => {
+        webcamBtn.textContent = "WEBCAM [W]";
+      }, 2000);
+    }
+  }
+
+  // ── Controls wiring ───────────────────────────────────────────────────────────
+  let rotSpeed = 0.46;
+  let rotation = 0;
+
+  const presetSelect = document.getElementById("preset-select") as HTMLSelectElement;
+  const segRange = document.getElementById("seg-range") as HTMLInputElement;
+  const segLabel = document.getElementById("seg-label")!;
+  const speedRange = document.getElementById("speed-range") as HTMLInputElement;
+  const speedLabel = document.getElementById("speed-label")!;
+  const zoomRange = document.getElementById("zoom-range") as HTMLInputElement;
+  const zoomLabel = document.getElementById("zoom-label")!;
+
+  presetSelect.addEventListener("change", () => {
+    blobs = PRESETS[presetSelect.value] ?? blobs;
+  });
+
+  segRange.addEventListener("input", () => {
+    const v = parseInt(segRange.value);
+    segLabel.textContent = `segments: ${v}`;
+    mat.uniforms.uN.value = v;
+  });
+
+  speedRange.addEventListener("input", () => {
+    rotSpeed = parseFloat(speedRange.value);
+    speedLabel.textContent = `speed: ${rotSpeed.toFixed(2)}`;
+  });
+
+  zoomRange.addEventListener("input", () => {
+    const v = parseFloat(zoomRange.value);
+    zoomLabel.textContent = `detail: ${v.toFixed(1)}`;
+    mat.uniforms.uZoom.value = v;
+  });
+
+  webcamBtn.addEventListener("click", toggleWebcam);
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "w" || e.key === "W") toggleWebcam();
+  });
+
+  // ── Drag to rotate ────────────────────────────────────────────────────────────
+  let isDragging = false;
+  let lastMX = 0;
+
+  canvas.addEventListener("mousedown", (e) => {
+    isDragging = true;
+    lastMX = e.clientX;
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!isDragging) return;
+    rotation += (e.clientX - lastMX) * 0.008;
+    lastMX = e.clientX;
+  });
+  window.addEventListener("mouseup", () => {
+    isDragging = false;
+  });
+
+  canvas.addEventListener(
+    "touchstart",
+    (e) => {
+      isDragging = true;
+      lastMX = e.touches[0].clientX;
+    },
+    { passive: true },
+  );
+  window.addEventListener("touchmove", (e) => {
+    if (!isDragging) return;
+    rotation += (e.touches[0].clientX - lastMX) * 0.008;
+    lastMX = e.touches[0].clientX;
+  });
+  window.addEventListener("touchend", () => {
+    isDragging = false;
+  });
+
+  // ── Animation loop ────────────────────────────────────────────────────────────
+  let t0 = 0;
+  function animate(t: number) {
+    const dt = Math.min((t - t0) / 1000, 0.05);
+    t0 = t;
+
+    if (!webcamActive) {
+      drawSource(t / 1000);
+      tex.needsUpdate = true;
+    }
+
+    rotation += rotSpeed * dt;
+    mat.uniforms.uRot.value = rotation;
+
+    renderer.render(scene, camera);
+    requestAnimationFrame(animate);
+  }
+
+  requestAnimationFrame(animate);
+</script>
