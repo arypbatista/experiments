@@ -1,0 +1,361 @@
+---
+---
+
+<canvas
+  id="canvas"
+  style="display:block;width:100%;height:100%;cursor:crosshair;"
+></canvas>
+
+<div
+  id="ctrl"
+  style="position:fixed;top:64px;right:24px;font-family:monospace;font-size:11px;color:rgba(255,255,255,0.7);display:flex;flex-direction:column;gap:8px;min-width:180px;"
+>
+  <div
+    style="font-size:12px;color:rgba(255,255,255,0.9);letter-spacing:0.06em;"
+  >
+    FLUID
+  </div>
+  <div style="font-size:10px;color:rgba(255,255,255,0.4);line-height:1.4;">
+    Eulerian grid · semi-Lagrangian advection<br />pressure projection · dye
+    injection
+  </div>
+
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="decay-label">dye decay: 0.995</span>
+    <input
+      id="decay-range"
+      type="range"
+      min="0.96"
+      max="1.0"
+      step="0.001"
+      value="0.995"
+      style="accent-color:white;width:100%;"
+    />
+  </label>
+
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="radius-label">brush: 10</span>
+    <input
+      id="radius-range"
+      type="range"
+      min="4"
+      max="40"
+      step="1"
+      value="10"
+      style="accent-color:white;width:100%;"
+    />
+  </label>
+
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="force-label">force: 8</span>
+    <input
+      id="force-range"
+      type="range"
+      min="1"
+      max="30"
+      step="1"
+      value="8"
+      style="accent-color:white;width:100%;"
+    />
+  </label>
+
+  <div style="border-top:1px solid rgba(255,255,255,0.1);margin:1px 0;"></div>
+
+  <button
+    id="btn-clear"
+    style="background:transparent;border:1px solid rgba(255,100,100,0.4);color:rgba(255,150,150,0.7);font-family:monospace;font-size:11px;padding:5px 10px;cursor:pointer;letter-spacing:0.08em;text-align:left;"
+  >CLEAR [C]</button>
+</div>
+
+<script>
+  // ── Config ────────────────────────────────────────────────────────────────
+  const SCALE = 4;        // screen pixels per grid cell
+  const ITERS = 30;       // pressure Jacobi iterations
+  const DAMPING = 0.999;  // velocity damping per step
+
+  // ── Canvas ────────────────────────────────────────────────────────────────
+  const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+  const ctx = canvas.getContext("2d")!;
+
+  let COLS = 0, ROWS = 0, N = 0;
+  let u: Float32Array, v: Float32Array;   // velocity (grid cells/step)
+  let u0: Float32Array, v0: Float32Array; // velocity scratch
+  let p: Float32Array, div: Float32Array;
+  let dye: Float32Array;  // RGB, length N*3, values 0–1
+  let dye0: Float32Array;
+  let imgData: ImageData;
+  let pixels8: Uint8ClampedArray;
+
+  function allocate(cols: number, rows: number) {
+    COLS = cols; ROWS = rows; N = cols * rows;
+    u    = new Float32Array(N); v    = new Float32Array(N);
+    u0   = new Float32Array(N); v0   = new Float32Array(N);
+    p    = new Float32Array(N); div  = new Float32Array(N);
+    dye  = new Float32Array(N * 3);
+    dye0 = new Float32Array(N * 3);
+    canvas.width  = COLS;
+    canvas.height = ROWS;
+    imgData = ctx.createImageData(COLS, ROWS);
+    pixels8 = imgData.data;
+    // pre-fill alpha
+    for (let i = 3; i < pixels8.length; i += 4) pixels8[i] = 255;
+  }
+
+  allocate(
+    Math.floor(window.innerWidth  / SCALE),
+    Math.floor(window.innerHeight / SCALE),
+  );
+
+  window.addEventListener("resize", () => {
+    allocate(
+      Math.floor(window.innerWidth  / SCALE),
+      Math.floor(window.innerHeight / SCALE),
+    );
+  });
+
+  // ── Math helpers ──────────────────────────────────────────────────────────
+  function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
+
+  function sample(f: Float32Array, x: number, y: number): number {
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const tx = x - x0, ty = y - y0;
+    const x1 = x0 + 1, y1 = y0 + 1;
+    const ax0 = x0 < 0 ? 0 : x0 >= COLS ? COLS - 1 : x0;
+    const ax1 = x1 < 0 ? 0 : x1 >= COLS ? COLS - 1 : x1;
+    const ay0 = y0 < 0 ? 0 : y0 >= ROWS ? ROWS - 1 : y0;
+    const ay1 = y1 < 0 ? 0 : y1 >= ROWS ? ROWS - 1 : y1;
+    return lerp(
+      lerp(f[ay0 * COLS + ax0], f[ay0 * COLS + ax1], tx),
+      lerp(f[ay1 * COLS + ax0], f[ay1 * COLS + ax1], tx),
+      ty,
+    );
+  }
+
+  // ── Advect (semi-Lagrangian backtrace) ────────────────────────────────────
+  function advect(dst: Float32Array, src: Float32Array) {
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        const i = y * COLS + x;
+        dst[i] = sample(src, x - u[i], y - v[i]);
+      }
+    }
+  }
+
+  function advectDye(decay: number) {
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        const i  = y * COLS + x;
+        const bx = x - u[i], by = y - v[i];
+        const x0 = Math.floor(bx), y0 = Math.floor(by);
+        const tx = bx - x0,        ty = by - y0;
+        const x1 = x0 + 1,         y1 = y0 + 1;
+        const ax0 = x0 < 0 ? 0 : x0 >= COLS ? COLS - 1 : x0;
+        const ax1 = x1 < 0 ? 0 : x1 >= COLS ? COLS - 1 : x1;
+        const ay0 = y0 < 0 ? 0 : y0 >= ROWS ? ROWS - 1 : y0;
+        const ay1 = y1 < 0 ? 0 : y1 >= ROWS ? ROWS - 1 : y1;
+        const i00 = (ay0 * COLS + ax0) * 3, i01 = (ay0 * COLS + ax1) * 3;
+        const i10 = (ay1 * COLS + ax0) * 3, i11 = (ay1 * COLS + ax1) * 3;
+        const di  = i * 3;
+        dye[di]   = lerp(lerp(dye0[i00],   dye0[i01],   tx), lerp(dye0[i10],   dye0[i11],   tx), ty) * decay;
+        dye[di+1] = lerp(lerp(dye0[i00+1], dye0[i01+1], tx), lerp(dye0[i10+1], dye0[i11+1], tx), ty) * decay;
+        dye[di+2] = lerp(lerp(dye0[i00+2], dye0[i01+2], tx), lerp(dye0[i10+2], dye0[i11+2], tx), ty) * decay;
+      }
+    }
+  }
+
+  // ── Project (make velocity divergence-free) ───────────────────────────────
+  function project() {
+    // divergence
+    for (let y = 1; y < ROWS - 1; y++) {
+      for (let x = 1; x < COLS - 1; x++) {
+        const i = y * COLS + x;
+        div[i] = 0.5 * (u[i + 1] - u[i - 1] + v[i + COLS] - v[i - COLS]);
+        p[i]   = 0;
+      }
+    }
+    // Jacobi pressure solve: ∇²p = div
+    for (let iter = 0; iter < ITERS; iter++) {
+      for (let y = 1; y < ROWS - 1; y++) {
+        for (let x = 1; x < COLS - 1; x++) {
+          const i = y * COLS + x;
+          p[i] = (p[i - 1] + p[i + 1] + p[i - COLS] + p[i + COLS] - div[i]) * 0.25;
+        }
+      }
+    }
+    // subtract pressure gradient
+    for (let y = 1; y < ROWS - 1; y++) {
+      for (let x = 1; x < COLS - 1; x++) {
+        const i = y * COLS + x;
+        u[i] -= 0.5 * (p[i + 1]    - p[i - 1]);
+        v[i] -= 0.5 * (p[i + COLS] - p[i - COLS]);
+      }
+    }
+    // boundary: no normal flow
+    for (let y = 0; y < ROWS; y++) {
+      u[y * COLS]            = 0;
+      u[y * COLS + COLS - 1] = 0;
+    }
+    for (let x = 0; x < COLS; x++) {
+      v[x]                        = 0;
+      v[(ROWS - 1) * COLS + x]    = 0;
+    }
+  }
+
+  // ── Simulation step ───────────────────────────────────────────────────────
+  let dyeDecay = 0.995;
+
+  function step() {
+    // advect velocity
+    u0.set(u); v0.set(v);
+    advect(u, u0);
+    advect(v, v0);
+    // damp + project
+    for (let i = 0; i < N; i++) { u[i] *= DAMPING; v[i] *= DAMPING; }
+    project();
+    // advect dye
+    dye0.set(dye);
+    advectDye(dyeDecay);
+  }
+
+  // ── Rendering ─────────────────────────────────────────────────────────────
+  function render() {
+    for (let i = 0; i < N; i++) {
+      const di = i * 3;
+      const pi = i * 4;
+      pixels8[pi]     = dye[di]   * 255 | 0;
+      pixels8[pi + 1] = dye[di+1] * 255 | 0;
+      pixels8[pi + 2] = dye[di+2] * 255 | 0;
+      // alpha already 255
+    }
+    ctx.putImageData(imgData, 0, 0);
+  }
+
+  // ── Color helpers ─────────────────────────────────────────────────────────
+  let hue = 0;
+
+  function hsvToRgb(h: number): [number, number, number] {
+    // h 0–360, s=1, v=1
+    const s = 1, v = 0.95;
+    const i = Math.floor(h / 60) % 6;
+    const f = h / 60 - Math.floor(h / 60);
+    const p = v * (1 - s);
+    const q = v * (1 - f * s);
+    const t = v * (1 - (1 - f) * s);
+    switch (i) {
+      case 0: return [v, t, p];
+      case 1: return [q, v, p];
+      case 2: return [p, v, t];
+      case 3: return [p, q, v];
+      case 4: return [t, p, v];
+      default:return [v, p, q];
+    }
+  }
+
+  // ── Splat (inject velocity + dye) ─────────────────────────────────────────
+  let splatRadius = 10;
+  let splatForce  = 8;
+
+  function splat(gx: number, gy: number, fx: number, fy: number) {
+    const R   = splatRadius;
+    const R2  = R * R;
+    const sig = R2 * 0.25;
+    const [dr, dg, db] = hsvToRgb(hue);
+    hue = (hue + 1.2) % 360;
+
+    for (let dy = -R; dy <= R; dy++) {
+      for (let dx = -R; dx <= R; dx++) {
+        const d2 = dx * dx + dy * dy;
+        if (d2 > R2) continue;
+        const nx = gx + dx, ny = gy + dy;
+        if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) continue;
+        const w  = Math.exp(-d2 / sig);
+        const i  = ny * COLS + nx;
+        u[i]  += fx * w;
+        v[i]  += fy * w;
+        const di = i * 3;
+        dye[di]   = Math.min(1, dye[di]   + dr * w);
+        dye[di+1] = Math.min(1, dye[di+1] + dg * w);
+        dye[di+2] = Math.min(1, dye[di+2] + db * w);
+      }
+    }
+  }
+
+  // ── Input ─────────────────────────────────────────────────────────────────
+  let dragging = false, lastCX = 0, lastCY = 0;
+
+  function screenToGrid(cx: number, cy: number) {
+    const r  = canvas.getBoundingClientRect();
+    const gx = ((cx - r.left) / r.width)  * COLS | 0;
+    const gy = ((cy - r.top)  / r.height) * ROWS | 0;
+    return { gx, gy };
+  }
+
+  function onDown(cx: number, cy: number) {
+    dragging = true;
+    lastCX = cx; lastCY = cy;
+    const { gx, gy } = screenToGrid(cx, cy);
+    splat(gx, gy, 0, 0);
+  }
+
+  function onMove(cx: number, cy: number) {
+    if (!dragging) return;
+    const dx = cx - lastCX, dy = cy - lastCY;
+    lastCX = cx; lastCY = cy;
+    const spd = Math.sqrt(dx * dx + dy * dy);
+    if (spd < 0.5) return;
+    const f   = Math.min(spd * 0.6, splatForce);
+    const ang = Math.atan2(dy, dx);
+    const { gx, gy } = screenToGrid(cx, cy);
+    splat(gx, gy, Math.cos(ang) * f, Math.sin(ang) * f);
+  }
+
+  canvas.addEventListener("mousedown",  e => onDown(e.clientX, e.clientY));
+  canvas.addEventListener("mousemove",  e => onMove(e.clientX, e.clientY));
+  canvas.addEventListener("mouseup",    () => { dragging = false; });
+  canvas.addEventListener("mouseleave", () => { dragging = false; });
+
+  canvas.addEventListener("touchstart", e => { e.preventDefault(); onDown(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
+  canvas.addEventListener("touchmove",  e => { e.preventDefault(); onMove(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
+  canvas.addEventListener("touchend",   e => { e.preventDefault(); dragging = false; }, { passive: false });
+
+  // ── Controls ──────────────────────────────────────────────────────────────
+  function clearAll() {
+    u.fill(0); v.fill(0); u0.fill(0); v0.fill(0);
+    p.fill(0); div.fill(0); dye.fill(0); dye0.fill(0);
+  }
+
+  const decayRange  = document.getElementById("decay-range")  as HTMLInputElement;
+  const decayLabel  = document.getElementById("decay-label")!;
+  decayRange.addEventListener("input", () => {
+    dyeDecay = parseFloat(decayRange.value);
+    decayLabel.textContent = `dye decay: ${dyeDecay.toFixed(3)}`;
+  });
+
+  const radiusRange = document.getElementById("radius-range") as HTMLInputElement;
+  const radiusLabel = document.getElementById("radius-label")!;
+  radiusRange.addEventListener("input", () => {
+    splatRadius = parseInt(radiusRange.value);
+    radiusLabel.textContent = `brush: ${splatRadius}`;
+  });
+
+  const forceRange  = document.getElementById("force-range")  as HTMLInputElement;
+  const forceLabel  = document.getElementById("force-label")!;
+  forceRange.addEventListener("input", () => {
+    splatForce = parseInt(forceRange.value);
+    forceLabel.textContent = `force: ${splatForce}`;
+  });
+
+  document.getElementById("btn-clear")!.addEventListener("click", clearAll);
+
+  window.addEventListener("keydown", e => {
+    if (e.key === "c" || e.key === "C") clearAll();
+  });
+
+  // ── Loop ──────────────────────────────────────────────────────────────────
+  function loop() {
+    step();
+    render();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+</script>
