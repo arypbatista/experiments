@@ -256,7 +256,7 @@
     },
     [WALL]: { density: 20 },
     [SMOKE]: { gravity: -1, ephemeral: true, density: 1 },
-    [ATTRACTOR]: { gravity: 0, density: 30, brushRadius: 1 },
+    [ATTRACTOR]: { gravity: 0, density: 30, brushRadius: 0 },
   };
 
   function getMaterialConfig(material: number): MaterialConfig {
@@ -329,8 +329,8 @@
     }
   }
 
-  const ATTRACTOR_RADIUS = 100;
-  const ATTRACTOR_STRENGTH = 300;
+  const ATTRACTOR_RADIUS = 1000;
+  const ATTRACTOR_STRENGTH = 1000;
 
   function applyAttractors() {
     for (let ay = 0; ay < ROWS; ay++) {
@@ -346,11 +346,13 @@
             const pt = grid[pidx];
             if (pt === EMPTY || pt === WALL || pt === ATTRACTOR) continue;
             const dist2 = dx * dx + dy * dy;
+            if (dist2 <= 4) continue; // leave immediate neighbors alone
             if (Math.random() > Math.min(ATTRACTOR_STRENGTH / dist2, 0.9))
               continue;
-            // Try to move one step toward attractor
+            // Try to move one step toward attractor, with diagonal fallback
             const sdx = -Math.sign(dx),
               sdy = -Math.sign(dy);
+            const dg = Math.random() < 0.5 ? 1 : -1;
             const candidates: [number, number][] =
               sdx !== 0 && sdy !== 0
                 ? [
@@ -358,7 +360,17 @@
                     [sdx, 0],
                     [0, sdy],
                   ]
-                : [[sdx, sdy]];
+                : sdx !== 0
+                  ? [
+                      [sdx, 0],
+                      [0, dg],
+                      [0, -dg],
+                    ] // blocked horizontally → slide up/down
+                  : [
+                      [0, sdy],
+                      [dg, 0],
+                      [-dg, 0],
+                    ]; // blocked vertically → slide left/right
             for (const [mx, my] of candidates) {
               const nx = px + mx,
                 ny = py + my;
