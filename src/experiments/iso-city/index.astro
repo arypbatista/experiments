@@ -1,0 +1,817 @@
+---
+---
+
+<canvas id="canvas" style="display:block;width:100%;height:100%;background:#0a0a0f;"></canvas>
+
+<!-- Controls panel -->
+<div id="controls" style="position:fixed;top:64px;right:24px;font-family:monospace;font-size:11px;color:rgba(255,255,255,0.7);display:flex;flex-direction:column;gap:8px;min-width:180px;">
+  <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:2px;">
+    <span style="font-size:12px;color:rgba(255,255,255,0.9);letter-spacing:0.06em;">CITY</span>
+    <span style="font-size:10px;color:rgba(255,255,255,0.4);line-height:1.4;">select a layout</span>
+  </div>
+  <select id="city-select" style="background:#000;border:1px solid rgba(255,255,255,0.3);color:rgba(255,255,255,0.8);font-family:monospace;font-size:11px;padding:4px 6px;cursor:pointer;width:100%;">
+    <option value="grid">Grid City</option>
+    <option value="diagonal">Diagonal City</option>
+    <option value="ring">Ring City</option>
+  </select>
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="speed-label">ball speed: 1.0×</span>
+    <input id="speed-range" type="range" min="0.5" max="3" step="0.1" value="1" style="accent-color:white;width:100%;" />
+  </label>
+</div>
+
+<div style="position:fixed;bottom:24px;right:24px;display:flex;gap:8px;">
+  <button id="reset-btn" style="background:transparent;border:1px solid rgba(255,255,255,0.4);color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;">RESET [R]</button>
+</div>
+
+<script>
+// ─── Isometric City ────────────────────────────────────────────────────────
+// Coordinate system: isometric 2D on canvas.
+//   World (wx, wy) → screen (sx, sy):
+//     sx = ox + (wx - wy) * TW/2
+//     sy = oy + (wx + wy) * TH/2
+//   where TW=tile width, TH=tile height (TH = TW/2 for classic 2:1 iso)
+//
+// Physics: simple impulse + friction. Buildings topple when hit.
+// ─────────────────────────────────────────────────────────────────────────
+
+const canvas = document.getElementById('canvas') as HTMLCanvasElement;
+const ctx = canvas.getContext('2d')!;
+let W = window.innerWidth, H = window.innerHeight;
+canvas.width = W; canvas.height = H;
+
+window.addEventListener('resize', () => {
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W; canvas.height = H;
+});
+
+// ── Iso projection ────────────────────────────────────────────────────────
+const TW = 80;  // tile width in pixels
+const TH = 40;  // tile height (TW/2)
+let OX = W / 2; // origin x (world 0,0 maps here)
+let OY = H * 0.28; // origin y
+
+function toScreen(wx: number, wy: number): [number, number] {
+  return [
+    OX + (wx - wy) * TW / 2,
+    OY + (wx + wy) * TH / 2,
+  ];
+}
+
+function fromScreen(sx: number, sy: number): [number, number] {
+  const dx = sx - OX, dy = sy - OY;
+  return [
+    (dx / (TW / 2) + dy / (TH / 2)) / 2,
+    (dy / (TH / 2) - dx / (TW / 2)) / 2,
+  ];
+}
+
+// ── City layouts ─────────────────────────────────────────────────────────
+type BuildingDef = { gx: number; gy: number; floors: number; w: number; d: number };
+type BlockDef = { road: boolean };
+type CarPath = [number, number][];
+
+interface CityDef {
+  blocks: BuildingDef[];
+  carPaths: CarPath[];
+}
+
+// Grid 4x4 blocks with cross streets
+function makeGridCity(): CityDef {
+  const blocks: BuildingDef[] = [];
+  const BLOCK = 2.5, STREET = 1.0;
+  const COLS = 4, ROWS = 4;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const baseX = c * (BLOCK + STREET) + 0.4;
+      const baseY = r * (BLOCK + STREET) + 0.4;
+      const count = 2 + Math.floor(seededRand(r * 10 + c) * 3);
+      for (let i = 0; i < count; i++) {
+        const ox = seededRand(r * 100 + c * 10 + i * 3) * 1.5;
+        const oy = seededRand(r * 100 + c * 10 + i * 3 + 1) * 1.5;
+        blocks.push({
+          gx: baseX + ox,
+          gy: baseY + oy,
+          floors: 1 + Math.floor(seededRand(r * 100 + c * 10 + i) * 5),
+          w: 0.45 + seededRand(r * 100 + c * 10 + i + 5) * 0.35,
+          d: 0.45 + seededRand(r * 100 + c * 10 + i + 6) * 0.35,
+        });
+      }
+    }
+  }
+
+  // Car paths along streets
+  const S = BLOCK + STREET;
+  const carPaths: CarPath[] = [
+    // horizontal top
+    [[0, 0], [S*4, 0], [S*4, S], [0, S], [0, 0]],
+    [[0, S*2], [S*4, S*2], [S*4, S*3], [0, S*3], [0, S*2]],
+    // vertical
+    [[0.5, 0], [0.5, S*4], [S+0.5, S*4], [S+0.5, 0], [0.5, 0]],
+    [[S*2+0.5, 0], [S*2+0.5, S*4], [S*3+0.5, S*4], [S*3+0.5, 0], [S*2+0.5, 0]],
+  ];
+  return { blocks, carPaths };
+}
+
+// Diagonal/staggered city
+function makeDiagonalCity(): CityDef {
+  const blocks: BuildingDef[] = [];
+  const positions: [number, number][] = [
+    [0,0],[2,0],[4,0],[6,0],[8,0],
+    [1,1.5],[3,1.5],[5,1.5],[7,1.5],
+    [0,3],[2,3],[4,3],[6,3],[8,3],
+    [1,4.5],[3,4.5],[5,4.5],[7,4.5],
+    [0,6],[2,6],[4,6],[6,6],[8,6],
+  ];
+  positions.forEach(([bx, by], i) => {
+    const count = 1 + Math.floor(seededRand(i * 7) * 3);
+    for (let j = 0; j < count; j++) {
+      blocks.push({
+        gx: bx + 0.2 + seededRand(i * 13 + j) * 0.9,
+        gy: by + 0.2 + seededRand(i * 13 + j + 1) * 0.9,
+        floors: 1 + Math.floor(seededRand(i * 13 + j + 2) * 6),
+        w: 0.4 + seededRand(i * 13 + j + 3) * 0.3,
+        d: 0.4 + seededRand(i * 13 + j + 4) * 0.3,
+      });
+    }
+  });
+  const carPaths: CarPath[] = [
+    [[1,0],[9,0],[9,3],[1,3],[1,0]],
+    [[0,1.5],[9,1.5],[9,6],[0,6],[0,1.5]],
+    [[1,4.5],[9,4.5],[9,7.5],[1,7.5],[1,4.5]],
+  ];
+  return { blocks, carPaths };
+}
+
+// Ring/plaza city
+function makeRingCity(): CityDef {
+  const blocks: BuildingDef[] = [];
+  // Outer ring
+  const outerAngles = 8;
+  const R = 4.5;
+  for (let i = 0; i < outerAngles; i++) {
+    const angle = (i / outerAngles) * Math.PI * 2;
+    const cx = 5 + Math.cos(angle) * R;
+    const cy = 5 + Math.sin(angle) * R;
+    const count = 2 + Math.floor(seededRand(i * 9) * 3);
+    for (let j = 0; j < count; j++) {
+      blocks.push({
+        gx: cx + (seededRand(i * 20 + j) - 0.5) * 1.2,
+        gy: cy + (seededRand(i * 20 + j + 1) - 0.5) * 1.2,
+        floors: 1 + Math.floor(seededRand(i * 20 + j + 2) * 7),
+        w: 0.4 + seededRand(i * 20 + j + 3) * 0.35,
+        d: 0.4 + seededRand(i * 20 + j + 4) * 0.35,
+      });
+    }
+  }
+  // Inner cluster
+  for (let i = 0; i < 4; i++) {
+    blocks.push({
+      gx: 4 + seededRand(i * 3) * 2,
+      gy: 4 + seededRand(i * 3 + 1) * 2,
+      floors: 3 + Math.floor(seededRand(i * 3 + 2) * 5),
+      w: 0.5, d: 0.5,
+    });
+  }
+  const carPaths: CarPath[] = [
+    [[5,1],[9,5],[5,9],[1,5],[5,1]],
+    [[5,0.5],[9.5,5],[5,9.5],[0.5,5],[5,0.5]],
+  ];
+  return { blocks, carPaths };
+}
+
+// ── Seeded random (deterministic layouts) ────────────────────────────────
+function seededRand(seed: number): number {
+  const x = Math.sin(seed + 1) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+// ── Types ─────────────────────────────────────────────────────────────────
+interface Building {
+  gx: number; gy: number;        // grid world position (center base)
+  w: number; d: number;          // footprint half-widths
+  floors: number;                // height in floors
+  alive: boolean;
+  // topple physics
+  angle: number;                 // tilt angle (radians)
+  angularVel: number;
+  tiltAxis: number;              // 0=toward viewer, 1=right, etc.
+  tiltAxisAngle: number;         // direction of tilt in world
+  hitTimer: number;              // flash timer
+}
+
+interface Car {
+  pathIdx: number;
+  t: number;          // 0..1 along current segment
+  speed: number;
+  wx: number; wy: number;
+  vx: number; vy: number;
+  alive: boolean;
+  hitTimer: number;
+  color: string;
+  segIdx: number;
+  path: CarPath;
+}
+
+interface Ball {
+  wx: number; wy: number;
+  vx: number; vy: number;
+  z: number; vz: number;   // z = height above ground
+  r: number;               // world radius
+  active: boolean;
+}
+
+// ── State ─────────────────────────────────────────────────────────────────
+let buildings: Building[] = [];
+let cars: Car[] = [];
+let ball: Ball = { wx: -2, wy: -2, vx: 0, vy: 0, z: 0, vz: 0, r: 0.38, active: false };
+let speedMult = 1.0;
+let currentCity = 'grid';
+
+const FLOOR_H = 0.55;   // world units per floor
+const GRAVITY = -18;
+const FRICTION = 0.985;
+const ANGULAR_DAMPING = 0.92;
+const CAR_COLORS = ['#ff4444','#44aaff','#ffdd44','#44ff88','#ff88ff','#ff8844'];
+
+function buildCity(type: string) {
+  let def: CityDef;
+  if (type === 'diagonal') def = makeDiagonalCity();
+  else if (type === 'ring') def = makeRingCity();
+  else def = makeGridCity();
+
+  buildings = def.blocks.map(b => ({
+    gx: b.gx, gy: b.gy,
+    w: b.w, d: b.d,
+    floors: b.floors,
+    alive: true,
+    angle: 0, angularVel: 0,
+    tiltAxis: 0, tiltAxisAngle: 0,
+    hitTimer: 0,
+  }));
+
+  cars = [];
+  def.carPaths.forEach((path, pi) => {
+    const numCars = 1 + Math.floor(seededRand(pi * 17) * 2);
+    for (let i = 0; i < numCars; i++) {
+      const segIdx = Math.floor(seededRand(pi * 17 + i) * (path.length - 1));
+      const t = seededRand(pi * 17 + i + 1);
+      const [wx, wy] = interpPath(path, segIdx, t);
+      cars.push({
+        pathIdx: pi, t, speed: 0.018 + seededRand(pi * 17 + i + 2) * 0.014,
+        wx, wy, vx: 0, vy: 0,
+        alive: true, hitTimer: 0,
+        color: CAR_COLORS[Math.floor(seededRand(pi * 17 + i + 3) * CAR_COLORS.length)],
+        segIdx,
+        path,
+      });
+    }
+  });
+
+  resetBall();
+}
+
+function interpPath(path: CarPath, segIdx: number, t: number): [number, number] {
+  const a = path[segIdx % path.length];
+  const b = path[(segIdx + 1) % path.length];
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
+function resetBall() {
+  ball = { wx: -2, wy: -2, vx: 0, vy: 0, z: 0, vz: 0, r: 0.38, active: false };
+}
+
+// ── Drag to throw ─────────────────────────────────────────────────────────
+let dragStart: { sx: number; sy: number } | null = null;
+let dragCurrent: { sx: number; sy: number } | null = null;
+
+canvas.addEventListener('mousedown', (e) => {
+  dragStart = { sx: e.clientX, sy: e.clientY };
+  dragCurrent = { sx: e.clientX, sy: e.clientY };
+  ball.active = false;
+});
+canvas.addEventListener('mousemove', (e) => {
+  if (dragStart) dragCurrent = { sx: e.clientX, sy: e.clientY };
+});
+canvas.addEventListener('mouseup', (e) => {
+  if (dragStart) {
+    throwBall(e.clientX, e.clientY);
+    dragStart = null; dragCurrent = null;
+  }
+});
+
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const t = e.touches[0];
+  dragStart = { sx: t.clientX, sy: t.clientY };
+  dragCurrent = { sx: t.clientX, sy: t.clientY };
+  ball.active = false;
+}, { passive: false });
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  if (dragStart) {
+    const t = e.touches[0];
+    dragCurrent = { sx: t.clientX, sy: t.clientY };
+  }
+}, { passive: false });
+canvas.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  if (dragStart && e.changedTouches[0]) {
+    const t = e.changedTouches[0];
+    throwBall(t.clientX, t.clientY);
+    dragStart = null; dragCurrent = null;
+  }
+}, { passive: false });
+
+function throwBall(releaseX: number, releaseY: number) {
+  if (!dragStart) return;
+  // Convert screen positions to world coordinates
+  const [wx0, wy0] = fromScreen(dragStart.sx, dragStart.sy);
+  const [wx1, wy1] = fromScreen(releaseX, releaseY);
+  const wdx = wx0 - wx1;
+  const wdy = wy0 - wy1;
+  const speed = Math.sqrt(wdx * wdx + wdy * wdy) * speedMult * 2.5;
+  if (speed < 0.05) return;
+
+  // Launch from where the user started dragging
+  ball.wx = wx0;
+  ball.wy = wy0;
+  ball.z = 0.2;
+  ball.vx = wdx / 0.25 * speedMult;
+  ball.vy = wdy / 0.25 * speedMult;
+  ball.vz = Math.max(2, speed * 0.4);
+  ball.active = true;
+}
+
+// ── Physics update ────────────────────────────────────────────────────────
+function updateBall(dt: number) {
+  if (!ball.active) return;
+  ball.vz += GRAVITY * dt;
+  ball.wx += ball.vx * dt;
+  ball.wy += ball.vy * dt;
+  ball.z += ball.vz * dt;
+  ball.vx *= FRICTION;
+  ball.vy *= FRICTION;
+
+  if (ball.z <= 0) {
+    ball.z = 0;
+    ball.vz *= -0.25;
+    ball.vx *= 0.85;
+    ball.vy *= 0.85;
+    if (Math.abs(ball.vz) < 0.3) { ball.vz = 0; }
+  }
+
+  // Check building collisions
+  for (const b of buildings) {
+    if (!b.alive) continue;
+    if (b.angle > Math.PI * 0.45) continue; // already fallen
+    const h = b.floors * FLOOR_H;
+    const dx = ball.wx - b.gx;
+    const dy = ball.wy - b.gy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const hitRadius = Math.max(b.w, b.d) + ball.r;
+    if (dist < hitRadius && ball.z < h + ball.r && ball.z >= -0.3) {
+      // Hit!
+      b.hitTimer = 0.3;
+      const nx = dx / (dist + 0.001);
+      const ny = dy / (dist + 0.001);
+      const impulse = (ball.vx * nx + ball.vy * ny) * 0.6;
+      b.angularVel += impulse * 1.2 / (b.floors * 0.5 + 1);
+      b.tiltAxisAngle = Math.atan2(ny, nx);
+      // Reflect ball
+      ball.vx -= nx * impulse * 1.8;
+      ball.vy -= ny * impulse * 1.8;
+    }
+  }
+
+  // Check car collisions
+  for (const car of cars) {
+    if (!car.alive) continue;
+    const dx = ball.wx - car.wx;
+    const dy = ball.wy - car.wy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < 0.55 + ball.r && ball.z < 0.6) {
+      car.alive = false;
+      car.hitTimer = 1.0;
+      // Kick car
+      car.vx = ball.vx * 0.6 + dx * 3;
+      car.vy = ball.vy * 0.6 + dy * 3;
+    }
+  }
+}
+
+function updateBuildings(dt: number) {
+  for (const b of buildings) {
+    if (!b.alive) continue;
+    b.hitTimer = Math.max(0, b.hitTimer - dt);
+    if (b.angularVel !== 0 || b.angle !== 0) {
+      b.angularVel *= ANGULAR_DAMPING;
+      b.angle += b.angularVel * dt;
+      if (b.angle > Math.PI * 0.5) {
+        b.angle = Math.PI * 0.5;
+        b.angularVel = 0;
+        b.alive = false; // fully toppled
+      }
+      if (b.angle < 0) { b.angle = 0; b.angularVel = 0; }
+    }
+  }
+}
+
+function updateCars(dt: number) {
+  for (const car of cars) {
+    car.hitTimer = Math.max(0, car.hitTimer - dt);
+    if (!car.alive) {
+      // Slide after hit
+      car.wx += car.vx * dt;
+      car.wy += car.vy * dt;
+      car.vx *= 0.9;
+      car.vy *= 0.9;
+      continue;
+    }
+    // Move along path
+    const path = car.path;
+    car.t += car.speed;
+    if (car.t >= 1) {
+      car.t -= 1;
+      car.segIdx = (car.segIdx + 1) % (path.length - 1);
+    }
+    const [nx, ny] = interpPath(path, car.segIdx, car.t);
+    car.vx = nx - car.wx;
+    car.vy = ny - car.wy;
+    car.wx = nx;
+    car.wy = ny;
+  }
+}
+
+// ── Draw helpers ──────────────────────────────────────────────────────────
+function isoTop(wx: number, wy: number, wz: number, w: number, d: number, fill: string, stroke: string) {
+  // Top face of a box at world (wx,wy) elevated by wz, half-extents w,d
+  const corners: [number, number][] = [
+    toScreen(wx - w, wy - d),
+    toScreen(wx + w, wy - d),
+    toScreen(wx + w, wy + d),
+    toScreen(wx - w, wy + d),
+  ].map(([sx, sy]) => [sx, sy - wz * TH]);
+
+  ctx.beginPath();
+  ctx.moveTo(corners[0][0], corners[0][1]);
+  for (let i = 1; i < 4; i++) ctx.lineTo(corners[i][0], corners[i][1]);
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+}
+
+function isoBox(wx: number, wy: number, w: number, d: number, h: number,
+  colorTop: string, colorLeft: string, colorRight: string,
+  strokeColor: string, tilt = 0, tiltAngle = 0) {
+
+  const wz = h; // height in world units → pixel offset = wz * TH
+  // For tilt: rotate the box drawing around its base center
+  ctx.save();
+  const [baseSX, baseSY] = toScreen(wx, wy);
+  if (tilt !== 0) {
+    // tilt toward the iso-direction of tiltAngle
+    const [offsetX, offsetY] = [Math.cos(tiltAngle), Math.sin(tiltAngle)];
+    const [ex, ey] = toScreen(wx + offsetX, wy + offsetY);
+    const dirX = ex - baseSX, dirY = ey - baseSY;
+    const len = Math.sqrt(dirX * dirX + dirY * dirY);
+    ctx.translate(baseSX, baseSY);
+    ctx.rotate(Math.atan2(dirY, dirX));
+    ctx.transform(1, 0, 0, 1, 0, 0); // reset after rotate
+    // Actually: just apply a shear/scale for the tilt effect visually
+    ctx.rotate(-Math.atan2(dirY, dirX));
+    ctx.translate(-baseSX, -baseSY);
+  }
+
+  // Left face (front-left)
+  const BL = toScreen(wx - w, wy + d);
+  const BR = toScreen(wx + w, wy + d);
+  const FL = toScreen(wx - w, wy - d);
+
+  // For tilt, we'll offset the top vertices
+  const tiltOffsetX = tilt !== 0 ? Math.cos(tiltAngle) * tilt * TW * 0.5 : 0;
+  const tiltOffsetY = tilt !== 0 ? Math.sin(tiltAngle + Math.PI) * tilt * TH * 0.8 : 0;
+
+  const topBL: [number, number] = [BL[0] + tiltOffsetX, BL[1] - wz * TH + tiltOffsetY];
+  const topBR: [number, number] = [BR[0] + tiltOffsetX, BR[1] - wz * TH + tiltOffsetY];
+  const topFL: [number, number] = [FL[0] + tiltOffsetX, FL[1] - wz * TH + tiltOffsetY];
+  const topFR: [number, number] = toScreen(wx + w, wy - d);
+  const topFR_t: [number, number] = [topFR[0] + tiltOffsetX, topFR[1] - wz * TH + tiltOffsetY];
+
+  ctx.lineWidth = 0.8;
+  ctx.strokeStyle = strokeColor;
+
+  // Left face (wy+ side)
+  ctx.beginPath();
+  ctx.moveTo(BL[0], BL[1]);
+  ctx.lineTo(topBL[0], topBL[1]);
+  ctx.lineTo(topBR[0], topBR[1]);
+  ctx.lineTo(BR[0], BR[1]);
+  ctx.closePath();
+  ctx.fillStyle = colorLeft;
+  ctx.fill(); ctx.stroke();
+
+  // Right face (wx+ side)
+  ctx.beginPath();
+  ctx.moveTo(BR[0], BR[1]);
+  ctx.lineTo(topBR[0], topBR[1]);
+  ctx.lineTo(topFR_t[0], topFR_t[1]);
+  ctx.lineTo(topFR[0], topFR[1]);
+  ctx.closePath();
+  ctx.fillStyle = colorRight;
+  ctx.fill(); ctx.stroke();
+
+  // Top face
+  ctx.beginPath();
+  ctx.moveTo(topFL[0], topFL[1]);
+  ctx.lineTo(topBL[0], topBL[1]);
+  ctx.lineTo(topBR[0], topBR[1]);
+  ctx.lineTo(topFR_t[0], topFR_t[1]);
+  ctx.closePath();
+  ctx.fillStyle = colorTop;
+  ctx.fill(); ctx.stroke();
+
+  ctx.restore();
+}
+
+// ── Draw grid (streets + ground) ──────────────────────────────────────────
+function drawGround(cityType: string) {
+  // Dark base
+  ctx.fillStyle = '#0a0a0f';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid lines (streets)
+  const COLS = 12, ROWS = 12;
+  const offset = -1;
+  ctx.lineWidth = 1;
+
+  // Street fill strips
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  for (let r = 0; r <= ROWS; r++) {
+    ctx.beginPath();
+    const [sx0, sy0] = toScreen(offset, offset + r);
+    const [sx1, sy1] = toScreen(offset + COLS, offset + r);
+    ctx.moveTo(sx0, sy0);
+    ctx.lineTo(sx1, sy1);
+    ctx.stroke();
+  }
+  for (let c = 0; c <= COLS; c++) {
+    ctx.beginPath();
+    const [sx0, sy0] = toScreen(offset + c, offset);
+    const [sx1, sy1] = toScreen(offset + c, offset + ROWS);
+    ctx.moveTo(sx0, sy0);
+    ctx.lineTo(sx1, sy1);
+    ctx.stroke();
+  }
+
+  // Ground fill
+  ctx.fillStyle = 'rgba(20,20,30,0.85)';
+  const [p0x, p0y] = toScreen(offset, offset);
+  const [p1x, p1y] = toScreen(offset + COLS, offset);
+  const [p2x, p2y] = toScreen(offset + COLS, offset + ROWS);
+  const [p3x, p3y] = toScreen(offset, offset + ROWS);
+  ctx.beginPath();
+  ctx.moveTo(p0x, p0y);
+  ctx.lineTo(p1x, p1y);
+  ctx.lineTo(p2x, p2y);
+  ctx.lineTo(p3x, p3y);
+  ctx.closePath();
+  ctx.fill();
+
+  // Street lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 1;
+  for (let r = 0; r <= ROWS; r++) {
+    ctx.beginPath();
+    const [sx0, sy0] = toScreen(offset, offset + r);
+    const [sx1, sy1] = toScreen(offset + COLS, offset + r);
+    ctx.moveTo(sx0, sy0); ctx.lineTo(sx1, sy1); ctx.stroke();
+  }
+  for (let c = 0; c <= COLS; c++) {
+    ctx.beginPath();
+    const [sx0, sy0] = toScreen(offset + c, offset);
+    const [sx1, sy1] = toScreen(offset + c, offset + ROWS);
+    ctx.moveTo(sx0, sy0); ctx.lineTo(sx1, sy1); ctx.stroke();
+  }
+}
+
+// ── Draw building ─────────────────────────────────────────────────────────
+const BUILDING_PALETTES = [
+  { top: '#2a2a3a', left: '#1a1a28', right: '#222232', win: 'rgba(180,220,255,0.35)' },
+  { top: '#1e2838', left: '#141e2e', right: '#192032', win: 'rgba(200,230,255,0.3)' },
+  { top: '#2a1e1e', left: '#1e1416', right: '#221618', win: 'rgba(255,180,100,0.35)' },
+  { top: '#1e2a1e', left: '#141e18', right: '#18221a', win: 'rgba(100,255,150,0.25)' },
+];
+
+function drawBuilding(b: Building) {
+  const hit = b.hitTimer > 0;
+  const palette = BUILDING_PALETTES[Math.floor(seededRand(b.gx * 17 + b.gy) * BUILDING_PALETTES.length)];
+
+  const tint = hit ? 0.5 : 0;
+  const tintR = hit ? 80 : 0;
+
+  const top = hit ? '#554444' : palette.top;
+  const left = hit ? '#443333' : palette.left;
+  const right = hit ? '#4a3838' : palette.right;
+  const strokeColor = hit ? 'rgba(255,120,80,0.8)' : 'rgba(255,255,255,0.18)';
+
+  const h = b.floors * FLOOR_H;
+  isoBox(b.gx, b.gy, b.w, b.d, h, top, left, right, strokeColor, b.angle, b.tiltAxisAngle);
+
+  // Windows (only if alive and upright)
+  if (b.alive && b.angle < 0.15) {
+    const winW = 0.06, winH_ratio = 0.12;
+    const cols = Math.max(1, Math.floor(b.w * 4));
+    const rows = b.floors;
+    ctx.fillStyle = palette.win;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const offX = -b.w + (c + 0.5) * (b.w * 2 / cols);
+        const wz = (r + 0.4) * FLOOR_H;
+        const [sx, sy] = toScreen(b.gx + offX, b.gy + b.d);
+        ctx.fillRect(sx - 3, sy - wz * TH - 4, 4, 5);
+      }
+    }
+    // Right face windows
+    const cols2 = Math.max(1, Math.floor(b.d * 4));
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols2; c++) {
+        const offY = -b.d + (c + 0.5) * (b.d * 2 / cols2);
+        const wz = (r + 0.4) * FLOOR_H;
+        const [sx, sy] = toScreen(b.gx + b.w, b.gy + offY);
+        ctx.fillRect(sx - 3, sy - wz * TH - 4, 4, 5);
+      }
+    }
+  }
+}
+
+// ── Draw car ──────────────────────────────────────────────────────────────
+function drawCar(car: Car) {
+  const carW = 0.22, carD = 0.14, carH = 0.14;
+  // Determine facing direction from velocity
+  const angle = Math.atan2(car.vy, car.vx);
+  const hit = car.hitTimer > 0;
+
+  const strokeColor = hit ? 'rgba(255,100,50,0.9)' : 'rgba(255,255,255,0.4)';
+  const top = hit ? '#886644' : car.color + '88';
+  const left = hit ? '#664422' : car.color + '55';
+  const right = hit ? '#775533' : car.color + '44';
+
+  isoBox(car.wx, car.wy, carW, carD, carH, top, left, right, strokeColor);
+}
+
+// ── Draw ball ─────────────────────────────────────────────────────────────
+function drawBall() {
+  if (!ball.active && !dragStart) return;
+
+  const r = ball.r;
+  const [sx, sy] = toScreen(ball.wx, ball.wy);
+  const screenY = sy - ball.z * TH;
+
+  // Shadow
+  const shadowAlpha = Math.max(0, 0.4 - ball.z * 0.08);
+  ctx.beginPath();
+  ctx.ellipse(sx, sy, r * TW * 0.5, r * TH * 0.35, 0, 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
+  ctx.fill();
+
+  // Ball
+  const grad = ctx.createRadialGradient(sx - 4, screenY - 4, 1, sx, screenY, r * TW * 0.5);
+  grad.addColorStop(0, 'rgba(255,255,220,0.95)');
+  grad.addColorStop(0.5, 'rgba(200,180,100,0.9)');
+  grad.addColorStop(1, 'rgba(80,60,20,0.85)');
+  ctx.beginPath();
+  ctx.arc(sx, screenY, r * TW * 0.5, 0, Math.PI * 2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,200,0.6)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+// ── Draw drag indicator ───────────────────────────────────────────────────
+function drawDragIndicator() {
+  if (!dragStart || !dragCurrent) return;
+  const ox = dragStart.sx, oy = dragStart.sy;
+  const cx = dragCurrent.sx, cy = dragCurrent.sy;
+
+  // Dashed line from drag start to current
+  ctx.save();
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = 'rgba(255,220,100,0.6)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(ox, oy);
+  ctx.lineTo(cx, cy);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Arrow tip at drag start (direction of throw)
+  const dx = ox - cx, dy = oy - cy;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len > 5) {
+    const nx = dx / len, ny = dy / len;
+    ctx.strokeStyle = 'rgba(255,220,100,0.9)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(ox, oy);
+    ctx.lineTo(ox + nx * 30, oy + ny * 30);
+    ctx.stroke();
+
+    // Arrowhead
+    const angle = Math.atan2(ny, nx);
+    ctx.beginPath();
+    ctx.moveTo(ox + nx * 30, oy + ny * 30);
+    ctx.lineTo(ox + nx * 30 - Math.cos(angle - 0.5) * 10, oy + ny * 30 - Math.sin(angle - 0.5) * 10);
+    ctx.lineTo(ox + nx * 30 - Math.cos(angle + 0.5) * 10, oy + ny * 30 - Math.sin(angle + 0.5) * 10);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255,220,100,0.9)';
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // Show ball preview at drag start (where the ball will actually launch from)
+  ctx.beginPath();
+  ctx.arc(ox, oy, ball.r * TW * 0.5, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255,220,100,0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+
+// ── Painter's sort ────────────────────────────────────────────────────────
+// In isometric, draw order = ascending (wx + wy) — farther first
+function sortDepth(wx: number, wy: number) { return wx + wy; }
+
+// ── Main render ───────────────────────────────────────────────────────────
+let last = 0;
+
+function draw(ts: number) {
+  const dt = Math.min((ts - last) / 1000, 0.05);
+  last = ts;
+
+  OX = W / 2;
+  OY = H * 0.28;
+
+  updateBall(dt);
+  updateBuildings(dt);
+  updateCars(dt);
+
+  drawGround(currentCity);
+
+  // Collect and sort renderable objects by painter's depth (wx + wy).
+  // Ball gets a z bonus so it sorts in front when airborne, but behind
+  // buildings it's passing under when rolling at ground level.
+  type RenderItem =
+    | { kind: 'building'; obj: Building; depth: number }
+    | { kind: 'car'; obj: Car; depth: number }
+    | { kind: 'ball'; depth: number };
+
+  const items: RenderItem[] = [
+    ...buildings.map(b => ({ kind: 'building' as const, obj: b, depth: sortDepth(b.gx, b.gy) })),
+    ...cars.map(c => ({ kind: 'car' as const, obj: c, depth: sortDepth(c.wx, c.wy) })),
+  ];
+  if (ball.active) {
+    items.push({ kind: 'ball', depth: sortDepth(ball.wx, ball.wy) + ball.z * 0.5 });
+  }
+  items.sort((a, b) => a.depth - b.depth);
+
+  for (const item of items) {
+    if (item.kind === 'building') drawBuilding(item.obj);
+    else if (item.kind === 'car') drawCar(item.obj);
+    else drawBall();
+  }
+
+  drawDragIndicator();
+
+  requestAnimationFrame(draw);
+}
+
+// ── Controls ──────────────────────────────────────────────────────────────
+const citySelect = document.getElementById('city-select') as HTMLSelectElement;
+const resetBtn = document.getElementById('reset-btn') as HTMLButtonElement;
+const speedRange = document.getElementById('speed-range') as HTMLInputElement;
+const speedLabel = document.getElementById('speed-label') as HTMLElement;
+
+citySelect.addEventListener('change', () => {
+  currentCity = citySelect.value;
+  buildCity(currentCity);
+});
+
+resetBtn.addEventListener('click', () => buildCity(currentCity));
+
+speedRange.addEventListener('input', () => {
+  speedMult = parseFloat(speedRange.value);
+  speedLabel.textContent = `ball speed: ${speedMult.toFixed(1)}×`;
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'r' || e.key === 'R') buildCity(currentCity);
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────
+buildCity('grid');
+requestAnimationFrame(draw);
+</script>
