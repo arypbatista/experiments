@@ -1,4 +1,5 @@
 ---
+
 ---
 
 <canvas
@@ -12,6 +13,7 @@
   <button class="mat-btn" data-mat="2">WATER [2]</button>
   <button class="mat-btn" data-mat="3">FIRE [3]</button>
   <button class="mat-btn" data-mat="4">WALL [4]</button>
+  <button class="mat-btn" data-mat="6">SOIL [6]</button>
   <button class="mat-btn" data-mat="0">ERASE [E]</button>
   <div class="divider"></div>
   <label>
@@ -85,27 +87,37 @@
 <script>
   // ── Constants ───────────────────────────────────────────────────────────────
   const CELL = 3;
-  const EMPTY = 0, SAND = 1, WATER = 2, FIRE = 3, WALL = 4, SMOKE = 5;
+  const EMPTY = 0,
+    SAND = 1,
+    WATER = 2,
+    FIRE = 3,
+    WALL = 4,
+    SMOKE = 5,
+    SOIL = 6;
 
   // ── Canvas setup ────────────────────────────────────────────────────────────
-  const canvas = document.getElementById('canvas') as HTMLCanvasElement;
-  const ctx = canvas.getContext('2d')!;
+  const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+  const ctx = canvas.getContext("2d")!;
 
-  let COLS = 0, ROWS = 0;
+  let COLS = 0,
+    ROWS = 0;
   let grid: Uint8Array, colr: Uint8Array, life: Uint8Array, moved: Uint8Array;
   let imageData: ImageData;
   let pixels: Uint32Array;
   let frameCount = 0;
 
   function initGrid(newCols: number, newRows: number) {
-    const oldGrid = grid, oldColr = colr, oldLife = life;
-    const oldCols = COLS, oldRows = ROWS;
+    const oldGrid = grid,
+      oldColr = colr,
+      oldLife = life;
+    const oldCols = COLS,
+      oldRows = ROWS;
 
     COLS = newCols;
     ROWS = newRows;
-    grid  = new Uint8Array(COLS * ROWS);
-    colr  = new Uint8Array(COLS * ROWS);
-    life  = new Uint8Array(COLS * ROWS);
+    grid = new Uint8Array(COLS * ROWS);
+    colr = new Uint8Array(COLS * ROWS);
+    life = new Uint8Array(COLS * ROWS);
     moved = new Uint8Array(COLS * ROWS);
 
     if (oldGrid) {
@@ -122,44 +134,79 @@
       }
     }
 
-    canvas.width  = COLS;
+    canvas.width = COLS;
     canvas.height = ROWS;
     imageData = ctx.createImageData(COLS, ROWS);
-    pixels    = new Uint32Array(imageData.data.buffer);
+    pixels = new Uint32Array(imageData.data.buffer);
   }
 
   initGrid(
-    Math.floor(window.innerWidth  / CELL),
+    Math.floor(window.innerWidth / CELL),
     Math.floor(window.innerHeight / CELL),
   );
 
-  window.addEventListener('resize', () => {
+  window.addEventListener("resize", () => {
     initGrid(
-      Math.floor(window.innerWidth  / CELL),
+      Math.floor(window.innerWidth / CELL),
       Math.floor(window.innerHeight / CELL),
     );
   });
 
   // ── Cell helpers ────────────────────────────────────────────────────────────
-  function place(idx: number, type: number, variation?: number, lifetime?: number) {
+  function place(
+    idx: number,
+    type: number,
+    variation?: number,
+    lifetime?: number,
+  ) {
     grid[idx] = type;
-    colr[idx] = variation ?? ((Math.random() * 256) | 0);
+    colr[idx] = variation ?? (Math.random() * 256) | 0;
     life[idx] = lifetime ?? 0;
   }
 
   function swapCells(a: number, b: number) {
     let tmp: number;
-    tmp = grid[a]; grid[a] = grid[b]; grid[b] = tmp;
-    tmp = colr[a]; colr[a] = colr[b]; colr[b] = tmp;
-    tmp = life[a]; life[a] = life[b]; life[b] = tmp;
+    tmp = grid[a];
+    grid[a] = grid[b];
+    grid[b] = tmp;
+    tmp = colr[a];
+    colr[a] = colr[b];
+    colr[b] = tmp;
+    tmp = life[a];
+    life[a] = life[b];
+    life[b] = tmp;
   }
 
   // ── Simulation rules ────────────────────────────────────────────────────────
-  function updateSand(x: number, y: number, idx: number) {
+
+  // MATERIAL --IS_HEAVER_THAN--> ARRAY<MATERIAL>
+  const densityMap: { [key: number]: number[] } = {
+    [SAND]: [WATER],
+    [WALL]: [SAND, WATER],
+  };
+
+  type MaterialConfig = {
+    sidewaysFlow?: boolean;
+  };
+
+  const defaultMaterialConfig: MaterialConfig = {
+    sidewaysFlow: false,
+  };
+
+  const materialConfigs: { [key: number]: MaterialConfig } = {
+    [WATER]: { sidewaysFlow: true },
+  };
+
+  function updateParticle(material: number, x: number, y: number, idx: number) {
     if (y + 1 >= ROWS) return;
+
+    const lighterMaterials = densityMap[material] || [];
+
+    const materialConfig = materialConfigs[material] || defaultMaterialConfig;
+
     const below = idx + COLS;
     const bt = grid[below];
-    if (bt === EMPTY || bt === WATER) {
+    if (bt === EMPTY || lighterMaterials.includes(bt)) {
       swapCells(idx, below);
       moved[below] = 1;
       return;
@@ -170,27 +217,20 @@
       if (nx < 0 || nx >= COLS) continue;
       const nidx = below + dx;
       const nt = grid[nidx];
-      if (nt === EMPTY || nt === WATER) {
+      if (nt === EMPTY || lighterMaterials.includes(nt)) {
         swapCells(idx, nidx);
         moved[nidx] = 1;
         return;
       }
     }
-  }
 
-  function updateWater(x: number, y: number, idx: number) {
-    if (y + 1 < ROWS) {
-      const below = idx + COLS;
-      if (grid[below] === EMPTY) {
-        swapCells(idx, below);
-        moved[below] = 1;
-        return;
-      }
+    if (materialConfig.sidewaysFlow) {
+      // Sideways flow
       const d1 = Math.random() < 0.5 ? -1 : 1;
       for (const dx of [d1, -d1]) {
         const nx = x + dx;
         if (nx < 0 || nx >= COLS) continue;
-        const nidx = below + dx;
+        const nidx = idx + dx;
         if (grid[nidx] === EMPTY) {
           swapCells(idx, nidx);
           moved[nidx] = 1;
@@ -198,18 +238,14 @@
         }
       }
     }
-    // Sideways flow
-    const d1 = Math.random() < 0.5 ? -1 : 1;
-    for (const dx of [d1, -d1]) {
-      const nx = x + dx;
-      if (nx < 0 || nx >= COLS) continue;
-      const nidx = idx + dx;
-      if (grid[nidx] === EMPTY) {
-        swapCells(idx, nidx);
-        moved[nidx] = 1;
-        return;
-      }
-    }
+  }
+
+  function updateSand(x: number, y: number, idx: number) {
+    return updateParticle(SAND, x, y, idx);
+  }
+
+  function updateWater(x: number, y: number, idx: number) {
+    return updateParticle(WATER, x, y, idx);
   }
 
   function updateFire(x: number, y: number, idx: number) {
@@ -222,10 +258,10 @@
 
     // Spread to sand; extinguished by water
     const nbrs = [
-      y > 0        ? idx - COLS : -1,
+      y > 0 ? idx - COLS : -1,
       y + 1 < ROWS ? idx + COLS : -1,
-      x > 0        ? idx - 1    : -1,
-      x + 1 < COLS ? idx + 1    : -1,
+      x > 0 ? idx - 1 : -1,
+      x + 1 < COLS ? idx + 1 : -1,
     ];
     for (const ni of nbrs) {
       if (ni < 0) continue;
@@ -286,8 +322,10 @@
         const idx = y * COLS + x;
         if (moved[idx]) continue;
         const t = grid[idx];
-        if      (t === SAND)  updateSand(x, y, idx);
+        if (t === SAND) updateSand(x, y, idx);
         else if (t === WATER) updateWater(x, y, idx);
+        else if (t === WALL) updateParticle(WALL, x, y, idx);
+        else if (t === SOIL) updateParticle(SOIL, x, y, idx);
       }
     }
 
@@ -297,7 +335,7 @@
         const idx = y * COLS + x;
         if (moved[idx]) continue;
         const t = grid[idx];
-        if      (t === FIRE)  updateFire(x, y, idx);
+        if (t === FIRE) updateFire(x, y, idx);
         else if (t === SMOKE) updateSmoke(x, y, idx);
       }
     }
@@ -309,35 +347,37 @@
     const n = COLS * ROWS;
     for (let i = 0; i < n; i++) {
       const t = grid[i];
-      let px = 0xFF000000; // black
+      let px = 0xff000000; // black
 
       if (t === SAND) {
         const v = colr[i];
         const r = 188 + (v >> 4) - 8;
         const g = 155 + (v >> 5) - 4;
-        const b = 88  + (v >> 6);
-        px = (0xFF000000 | (b << 16) | (g << 8) | r) >>> 0;
-
+        const b = 88 + (v >> 6);
+        px = (0xff000000 | (b << 16) | (g << 8) | r) >>> 0;
       } else if (t === WATER) {
         const v = colr[i];
         const r = 25;
-        const g = 88  + (v >> 4);
+        const g = 88 + (v >> 4);
         const b = 190 + (v >> 5);
-        px = (0xFF000000 | (b << 16) | (g << 8) | r) >>> 0;
-
+        px = (0xff000000 | (b << 16) | (g << 8) | r) >>> 0;
       } else if (t === FIRE) {
         const v = colr[i];
         const flick = (Math.random() * 80) | 0;
         const r = 255;
         const g = Math.min(220, (v >> 1) + flick);
         const b = flick > 65 ? (flick - 65) * 3 : 0;
-        px = (0xFF000000 | (b << 16) | (g << 8) | r) >>> 0;
-
+        px = (0xff000000 | (b << 16) | (g << 8) | r) >>> 0;
+      } else if (t === SOIL) {
+        const v = colr[i];
+        const r = 101 + (v >> 5);
+        const g = 67 + (v >> 5);
+        const b = 33 + (v >> 6);
+        px = (0xff000000 | (b << 16) | (g << 8) | r) >>> 0;
       } else if (t === WALL) {
         const v = colr[i];
         const s = 75 + (v >> 4);
-        px = (0xFF000000 | (s << 16) | (s << 8) | s) >>> 0;
-
+        px = (0xff000000 | (s << 16) | (s << 8) | s) >>> 0;
       } else if (t === SMOKE) {
         const v = colr[i];
         const l = life[i];
@@ -358,8 +398,8 @@
 
   function screenToGrid(cx: number, cy: number) {
     const rect = canvas.getBoundingClientRect();
-    const gx = Math.floor(((cx - rect.left) / rect.width)  * COLS);
-    const gy = Math.floor(((cy - rect.top)  / rect.height) * ROWS);
+    const gx = Math.floor(((cx - rect.left) / rect.width) * COLS);
+    const gy = Math.floor(((cy - rect.top) / rect.height) * ROWS);
     return { gx, gy };
   }
 
@@ -370,7 +410,8 @@
     for (let dy = -r; dy <= r; dy++) {
       for (let dx = -r; dx <= r; dx++) {
         if (dx * dx + dy * dy > r2) continue;
-        const nx = gx + dx, ny = gy + dy;
+        const nx = gx + dx,
+          ny = gy + dy;
         if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) continue;
         const idx = ny * COLS + nx;
         if (currentMat === EMPTY) {
@@ -388,59 +429,101 @@
     }
   }
 
-  canvas.addEventListener('mousedown', (e) => { drawing = true; drawAt(e.clientX, e.clientY); });
-  canvas.addEventListener('mousemove', (e) => { if (drawing) drawAt(e.clientX, e.clientY); });
-  canvas.addEventListener('mouseup', () => { drawing = false; });
-  canvas.addEventListener('mouseleave', () => { drawing = false; });
-
-  canvas.addEventListener('touchstart', (e) => {
-    e.preventDefault();
+  canvas.addEventListener("mousedown", (e) => {
     drawing = true;
-    drawAt(e.touches[0].clientX, e.touches[0].clientY);
-  }, { passive: false });
-  canvas.addEventListener('touchmove', (e) => {
-    e.preventDefault();
-    if (drawing) drawAt(e.touches[0].clientX, e.touches[0].clientY);
-  }, { passive: false });
-  canvas.addEventListener('touchend', (e) => {
-    e.preventDefault();
+    drawAt(e.clientX, e.clientY);
+  });
+  canvas.addEventListener("mousemove", (e) => {
+    if (drawing) drawAt(e.clientX, e.clientY);
+  });
+  canvas.addEventListener("mouseup", () => {
     drawing = false;
-  }, { passive: false });
+  });
+  canvas.addEventListener("mouseleave", () => {
+    drawing = false;
+  });
+
+  canvas.addEventListener(
+    "touchstart",
+    (e) => {
+      e.preventDefault();
+      drawing = true;
+      drawAt(e.touches[0].clientX, e.touches[0].clientY);
+    },
+    { passive: false },
+  );
+  canvas.addEventListener(
+    "touchmove",
+    (e) => {
+      e.preventDefault();
+      if (drawing) drawAt(e.touches[0].clientX, e.touches[0].clientY);
+    },
+    { passive: false },
+  );
+  canvas.addEventListener(
+    "touchend",
+    (e) => {
+      e.preventDefault();
+      drawing = false;
+    },
+    { passive: false },
+  );
 
   // ── UI ──────────────────────────────────────────────────────────────────────
   function setMaterial(mat: number) {
     currentMat = mat;
-    document.querySelectorAll('.mat-btn').forEach((btn) => {
+    document.querySelectorAll(".mat-btn").forEach((btn) => {
       const el = btn as HTMLElement;
-      el.classList.toggle('active', parseInt(el.dataset.mat!) === mat);
+      el.classList.toggle("active", parseInt(el.dataset.mat!) === mat);
     });
   }
 
-  document.querySelectorAll('.mat-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
+  document.querySelectorAll(".mat-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
       setMaterial(parseInt((btn as HTMLElement).dataset.mat!));
     });
   });
 
-  document.getElementById('btn-clear')!.addEventListener('click', () => {
-    grid.fill(0); colr.fill(0); life.fill(0);
+  document.getElementById("btn-clear")!.addEventListener("click", () => {
+    grid.fill(0);
+    colr.fill(0);
+    life.fill(0);
   });
 
-  const brushRange = document.getElementById('brush-range') as HTMLInputElement;
-  const brushLabel = document.getElementById('brush-label')!;
-  brushRange.addEventListener('input', () => {
+  const brushRange = document.getElementById("brush-range") as HTMLInputElement;
+  const brushLabel = document.getElementById("brush-label")!;
+  brushRange.addEventListener("input", () => {
     brushRadius = parseInt(brushRange.value);
     brushLabel.textContent = `brush: ${brushRadius}`;
   });
 
-  window.addEventListener('keydown', (e) => {
+  window.addEventListener("keydown", (e) => {
     switch (e.key) {
-      case '1': setMaterial(SAND);  break;
-      case '2': setMaterial(WATER); break;
-      case '3': setMaterial(FIRE);  break;
-      case '4': setMaterial(WALL);  break;
-      case 'e': case 'E': setMaterial(EMPTY); break;
-      case 'c': case 'C': grid.fill(0); colr.fill(0); life.fill(0); break;
+      case "1":
+        setMaterial(SAND);
+        break;
+      case "2":
+        setMaterial(WATER);
+        break;
+      case "3":
+        setMaterial(FIRE);
+        break;
+      case "4":
+        setMaterial(WALL);
+        break;
+      case "6":
+        setMaterial(SOIL);
+        break;
+      case "e":
+      case "E":
+        setMaterial(EMPTY);
+        break;
+      case "c":
+      case "C":
+        grid.fill(0);
+        colr.fill(0);
+        life.fill(0);
+        break;
     }
   });
 
