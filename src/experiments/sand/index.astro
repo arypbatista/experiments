@@ -179,73 +179,89 @@
 
   // ── Simulation rules ────────────────────────────────────────────────────────
 
-  // MATERIAL --IS_HEAVER_THAN--> ARRAY<MATERIAL>
-  const densityMap: { [key: number]: number[] } = {
-    [SAND]: [WATER],
-    [WALL]: [SAND, WATER],
-  };
-
   type MaterialConfig = {
-    sidewaysFlow?: boolean;
+    sidewaysFlow: boolean;
+    gravity: number;
+    density: number;
+    ephemeral: boolean;
   };
 
   const defaultMaterialConfig: MaterialConfig = {
     sidewaysFlow: false,
+    gravity: 1,
+    density: 10,
+    ephemeral: false,
   };
 
-  const materialConfigs: { [key: number]: MaterialConfig } = {
-    [WATER]: { sidewaysFlow: true },
+  const materialConfigs: { [key: number]: Partial<MaterialConfig> } = {
+    [SAND]: {},
+    [SOIL]: { density: 15 },
+    [WATER]: { sidewaysFlow: true, density: 2 },
+    [FIRE]: { ephemeral: true, density: 1 },
+    [WALL]: { density: 20 },
+    [SMOKE]: { gravity: -1, ephemeral: true, density: 1 },
   };
+
+  function getMaterialConfig(material: number): MaterialConfig {
+    return Object.assign(
+      {},
+      defaultMaterialConfig,
+      materialConfigs[material] || {},
+    );
+  }
+
+  function lighterThan(materialA: number, materialB: number) {
+    const materialAConfig = getMaterialConfig(materialA);
+    const materialBConfig = getMaterialConfig(materialB);
+    return materialAConfig.density < materialBConfig.density;
+  }
 
   function updateParticle(material: number, x: number, y: number, idx: number) {
-    if (y + 1 >= ROWS) return;
+    const materialConfig = getMaterialConfig(material);
 
-    const lighterMaterials = densityMap[material] || [];
-
-    const materialConfig = materialConfigs[material] || defaultMaterialConfig;
-
-    const below = idx + COLS;
-    const bt = grid[below];
-    if (bt === EMPTY || lighterMaterials.includes(bt)) {
-      swapCells(idx, below);
-      moved[below] = 1;
+    if (materialConfig.ephemeral && --life[idx] <= 0) {
+      grid[idx] = EMPTY;
       return;
     }
-    const d1 = Math.random() < 0.5 ? -1 : 1;
-    for (const dx of [d1, -d1]) {
-      const nx = x + dx;
-      if (nx < 0 || nx >= COLS) continue;
-      const nidx = below + dx;
-      const nt = grid[nidx];
-      if (nt === EMPTY || lighterMaterials.includes(nt)) {
-        swapCells(idx, nidx);
-        moved[nidx] = 1;
+
+    if (materialConfig.gravity != 0) {
+      if (materialConfig.gravity > 0 ? y + 1 >= ROWS : y <= 0) return;
+
+      const below = idx + COLS * Math.sign(materialConfig.gravity);
+      const bt = grid[below];
+      if (bt === EMPTY || lighterThan(bt, material)) {
+        swapCells(idx, below);
+        moved[below] = 1;
         return;
       }
-    }
-
-    if (materialConfig.sidewaysFlow) {
-      // Sideways flow
       const d1 = Math.random() < 0.5 ? -1 : 1;
       for (const dx of [d1, -d1]) {
         const nx = x + dx;
         if (nx < 0 || nx >= COLS) continue;
-        const nidx = idx + dx;
-        if (grid[nidx] === EMPTY) {
+        const nidx = below + dx;
+        const nt = grid[nidx];
+        if (nt === EMPTY || lighterThan(nt, material)) {
           swapCells(idx, nidx);
           moved[nidx] = 1;
           return;
         }
       }
+
+      if (materialConfig.sidewaysFlow) {
+        // Sideways flow
+        const d1 = Math.random() < 0.5 ? -1 : 1;
+        for (const dx of [d1, -d1]) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= COLS) continue;
+          const nidx = idx + dx;
+          if (grid[nidx] === EMPTY) {
+            swapCells(idx, nidx);
+            moved[nidx] = 1;
+            return;
+          }
+        }
+      }
     }
-  }
-
-  function updateSand(x: number, y: number, idx: number) {
-    return updateParticle(SAND, x, y, idx);
-  }
-
-  function updateWater(x: number, y: number, idx: number) {
-    return updateParticle(WATER, x, y, idx);
   }
 
   function updateFire(x: number, y: number, idx: number) {
@@ -286,31 +302,6 @@
     }
   }
 
-  function updateSmoke(x: number, y: number, idx: number) {
-    if (--life[idx] <= 0) {
-      grid[idx] = EMPTY;
-      return;
-    }
-    if (y <= 0) return;
-    const above = idx - COLS;
-    if (grid[above] === EMPTY) {
-      swapCells(idx, above);
-      moved[above] = 1;
-      return;
-    }
-    const d1 = Math.random() < 0.5 ? -1 : 1;
-    for (const dx of [d1, -d1]) {
-      const nx = x + dx;
-      if (nx < 0 || nx >= COLS) continue;
-      const nidx = above + dx;
-      if (grid[nidx] === EMPTY) {
-        swapCells(idx, nidx);
-        moved[nidx] = 1;
-        return;
-      }
-    }
-  }
-
   function step() {
     moved.fill(0);
 
@@ -322,8 +313,8 @@
         const idx = y * COLS + x;
         if (moved[idx]) continue;
         const t = grid[idx];
-        if (t === SAND) updateSand(x, y, idx);
-        else if (t === WATER) updateWater(x, y, idx);
+        if (t === SAND) updateParticle(SAND, x, y, idx);
+        else if (t === WATER) updateParticle(WATER, x, y, idx);
         else if (t === WALL) updateParticle(WALL, x, y, idx);
         else if (t === SOIL) updateParticle(SOIL, x, y, idx);
       }
@@ -336,7 +327,7 @@
         if (moved[idx]) continue;
         const t = grid[idx];
         if (t === FIRE) updateFire(x, y, idx);
-        else if (t === SMOKE) updateSmoke(x, y, idx);
+        else if (t === SMOKE) updateParticle(SMOKE, x, y, idx);
       }
     }
   }
