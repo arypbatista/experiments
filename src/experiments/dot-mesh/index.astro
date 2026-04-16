@@ -1,0 +1,441 @@
+---
+---
+
+<div id="container" style="position:fixed;inset:0;overflow:hidden;"></div>
+
+<!-- Renderer selector — top-right, clears back-button overlay -->
+<div style="position:fixed;top:64px;right:24px;font-family:monospace;font-size:11px;color:rgba(255,255,255,0.7);display:flex;flex-direction:column;gap:8px;min-width:180px;">
+  <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:2px;">
+    <span style="font-size:12px;color:rgba(255,255,255,0.9);letter-spacing:0.06em;">RENDERER</span>
+    <span style="font-size:10px;color:rgba(255,255,255,0.4);line-height:1.4;">spring dot grid</span>
+  </div>
+  <select
+    id="mode-select"
+    style="background:#000;border:1px solid rgba(255,255,255,0.3);color:rgba(255,255,255,0.8);font-family:monospace;font-size:11px;padding:4px 6px;cursor:pointer;width:100%;"
+  >
+    <option value="p5">p5.js</option>
+    <option value="p5mic">p5.js + Mic</option>
+    <option value="three">Three.js</option>
+  </select>
+  <span id="mic-status" style="font-size:10px;color:rgba(255,255,200,0.5);display:none;">
+    click canvas to enable mic
+  </span>
+</div>
+
+<script>
+  import p5 from 'p5';
+  import * as THREE from 'three';
+
+  // ---------------------------------------------------------------
+  // Config
+  // ---------------------------------------------------------------
+  const BASE_MESH_SIZE: [number, number] = [20, 20];
+  const BASE_MARGIN = 50;
+
+  // ---------------------------------------------------------------
+  // Shared physics
+  // ---------------------------------------------------------------
+  class Spring {
+    x: number; y: number;
+    rx: number; ry: number;
+    vx = 0; vy = 0;
+    readonly k = 0.035; readonly damp = 0.95; readonly mass = 1;
+
+    constructor(x: number, y: number) {
+      this.x = x; this.y = y; this.rx = x; this.ry = y;
+    }
+
+    update() {
+      let f = -this.k * (this.y - this.ry);
+      this.vy = this.damp * (this.vy + f / this.mass);
+      this.y += this.vy;
+      f = -this.k * (this.x - this.rx);
+      this.vx = this.damp * (this.vx + f / this.mass);
+      this.x += this.vx;
+    }
+
+    setRest(x: number, y: number) { this.rx = x; this.ry = y; }
+  }
+
+  type Stimulus = { x: number; y: number; strength: number } | null;
+
+  function displaced(
+    bx: number, by: number,
+    tx: number, ty: number,
+    radius: number,
+    pull: boolean
+  ) {
+    const dx = pull ? tx - bx : bx - tx;
+    const dy = pull ? ty - by : by - ty;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < radius) {
+      const ease = (radius - dist) / radius;
+      return { x: bx + dx * ease, y: by + dy * ease };
+    }
+    return { x: bx, y: by };
+  }
+
+  class MeshNode {
+    i: number; j: number;
+    cols: number; rows: number; margin: number; W: number; H: number;
+    spring: Spring;
+
+    constructor(i: number, j: number, cols: number, rows: number, margin: number, W: number, H: number) {
+      this.i = i; this.j = j;
+      this.cols = cols; this.rows = rows;
+      this.margin = margin; this.W = W; this.H = H;
+      const b = this.base();
+      this.spring = new Spring(b.x, b.y);
+    }
+
+    base() {
+      return {
+        x: (this.i * (this.W - 100)) / (this.cols - 1) + this.margin,
+        y: (this.j * (this.H - 100)) / (this.rows - 1) + this.margin,
+      };
+    }
+
+    update(s: Stimulus) {
+      const b = this.base();
+      let target = { x: b.x, y: b.y };
+      if (s) {
+        const radius = Math.abs(s.strength) * 10;
+        target = displaced(b.x, b.y, s.x, s.y, radius, s.strength < 0);
+      }
+      this.spring.setRest(target.x, target.y);
+      this.spring.update();
+    }
+
+    pos() { return { x: this.spring.x, y: this.spring.y }; }
+  }
+
+  type Edge = [MeshNode, MeshNode];
+
+  class MeshSystem {
+    nodes: MeshNode[] = [];
+    edges: Edge[] = [];
+    cols: number; rows: number; margin: number; W: number; H: number;
+
+    constructor(W: number, H: number) {
+      this.W = W; this.H = H;
+      const proportion = W / 800;
+      this.cols = Math.floor(BASE_MESH_SIZE[0] * proportion);
+      this.rows = BASE_MESH_SIZE[1];
+      this.margin = BASE_MARGIN * proportion;
+    }
+
+    build() {
+      this.nodes = [];
+      this.edges = [];
+      for (let i = 0; i < this.cols; i++) {
+        for (let j = 0; j < this.rows; j++) {
+          this.nodes.push(new MeshNode(i, j, this.cols, this.rows, this.margin, this.W, this.H));
+        }
+      }
+      const dirs = [{ di: 1, dj: 0 }, { di: 0, dj: 1 }, { di: 1, dj: 1 }, { di: 1, dj: -1 }];
+      for (const n1 of this.nodes) {
+        for (const { di, dj } of dirs) {
+          const n2 = this.nodes.find(n => n.i === n1.i + di && n.j === n1.j + dj);
+          if (n2) this.edges.push([n1, n2]);
+        }
+      }
+    }
+
+    update(s: Stimulus) { this.nodes.forEach(n => n.update(s)); }
+
+    containsPx(mx: number, my: number) {
+      return mx >= this.margin && mx <= this.W - this.margin &&
+             my >= this.margin && my <= this.H - this.margin;
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Microphone (Web Audio API)
+  // ---------------------------------------------------------------
+  let audioCtx: AudioContext | null = null;
+  let analyser: AnalyserNode | null = null;
+  let micEnabled = false;
+
+  async function enableMic() {
+    if (audioCtx) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioCtx = new AudioContext();
+      const src = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      src.connect(analyser);
+      micEnabled = true;
+      (document.getElementById('mic-status') as HTMLElement).textContent = 'mic active';
+    } catch {
+      (document.getElementById('mic-status') as HTMLElement).textContent = 'mic denied';
+    }
+  }
+
+  function getMicLevel(): number {
+    if (!analyser) return 0;
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const v = (buf[i] - 128) / 128;
+      sum += v * v;
+    }
+    return Math.sqrt(sum / buf.length);
+  }
+
+  // ---------------------------------------------------------------
+  // Mouse tracking
+  // ---------------------------------------------------------------
+  let mouseX = -9999;
+  let mouseY = -9999;
+  window.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+  window.addEventListener('mouseleave', () => { mouseX = -9999; mouseY = -9999; });
+
+  // ---------------------------------------------------------------
+  // Renderer interface
+  // ---------------------------------------------------------------
+  interface Renderer {
+    start(container: HTMLElement, mesh: MeshSystem): void;
+    onResize(W: number, H: number, mesh: MeshSystem): void;
+    stop(): void;
+  }
+
+  // ---------------------------------------------------------------
+  // p5 Renderer
+  // ---------------------------------------------------------------
+  class P5Renderer implements Renderer {
+    private inst: InstanceType<typeof p5> | null = null;
+    private mesh!: MeshSystem;
+    private readonly useMic: boolean;
+    private readonly onResizeCb: (W: number, H: number) => void;
+
+    constructor(useMic: boolean, onResizeCb: (W: number, H: number) => void) {
+      this.useMic = useMic;
+      this.onResizeCb = onResizeCb;
+    }
+
+    start(container: HTMLElement, mesh: MeshSystem) {
+      this.mesh = mesh;
+      this.inst = new p5((p: p5) => {
+        p.setup = () => {
+          const canvas = p.createCanvas(p.windowWidth, p.windowHeight);
+          canvas.parent(container);
+          if (this.useMic) {
+            canvas.mousePressed(() => enableMic());
+          }
+        };
+
+        p.draw = () => {
+          const strength = this.useMic
+            ? Math.min(getMicLevel() * 2000 - 20, 50)
+            : 50;
+          const stimulus: Stimulus = this.mesh.containsPx(p.mouseX, p.mouseY)
+            ? { x: p.mouseX, y: p.mouseY, strength }
+            : null;
+
+          this.mesh.update(stimulus);
+
+          p.background(0);
+
+          // Edges
+          p.strokeWeight(1);
+          for (const [n1, n2] of this.mesh.edges) {
+            const { x: x1, y: y1 } = n1.pos();
+            const { x: x2, y: y2 } = n2.pos();
+            const angle = p.atan2(y2 - y1, x2 - x1);
+            const gap = 5;
+            p.stroke(255, 255 * 0.15);
+            p.line(
+              x1 + p.cos(angle) * gap, y1 + p.sin(angle) * gap,
+              x2 - p.cos(angle) * gap, y2 - p.sin(angle) * gap,
+            );
+          }
+
+          // Nodes
+          p.noStroke();
+          p.fill(255, 255 * 0.7);
+          for (const n of this.mesh.nodes) {
+            const { x, y } = n.pos();
+            p.ellipse(x, y, 4, 4);
+          }
+        };
+
+        p.windowResized = () => {
+          p.resizeCanvas(p.windowWidth, p.windowHeight);
+          this.onResizeCb(p.windowWidth, p.windowHeight);
+        };
+      });
+    }
+
+    onResize(_W: number, _H: number, mesh: MeshSystem) {
+      this.mesh = mesh; // canvas resize is handled inside p5.windowResized
+    }
+
+    stop() { this.inst?.remove(); this.inst = null; }
+  }
+
+  // ---------------------------------------------------------------
+  // Three.js Renderer
+  // ---------------------------------------------------------------
+  class ThreeRenderer implements Renderer {
+    private renderer!: THREE.WebGLRenderer;
+    private scene!: THREE.Scene;
+    private camera!: THREE.OrthographicCamera;
+    private dots: THREE.Mesh[] = [];
+    private lines: THREE.Line[] = [];
+    private rafId = 0;
+    private mesh!: MeshSystem;
+    private readonly onResizeCb: (W: number, H: number) => void;
+
+    constructor(onResizeCb: (W: number, H: number) => void) {
+      this.onResizeCb = onResizeCb;
+    }
+
+    start(container: HTMLElement, mesh: MeshSystem) {
+      this.mesh = mesh;
+      const W = mesh.W, H = mesh.H;
+
+      this.scene = new THREE.Scene();
+      this.renderer = new THREE.WebGLRenderer({ antialias: true });
+      this.renderer.setPixelRatio(devicePixelRatio);
+      this.renderer.setSize(W, H);
+      container.appendChild(this.renderer.domElement);
+
+      this.camera = new THREE.OrthographicCamera(-W / 2, W / 2, H / 2, -H / 2, 0.1, 1000);
+      this.camera.position.z = 10;
+
+      this.syncObjects();
+
+      const handleResize = () => {
+        const nW = window.innerWidth, nH = window.innerHeight;
+        this.renderer.setSize(nW, nH);
+        this.camera.left = -nW / 2; this.camera.right = nW / 2;
+        this.camera.top = nH / 2; this.camera.bottom = -nH / 2;
+        this.camera.updateProjectionMatrix();
+        this.onResizeCb(nW, nH);
+      };
+      window.addEventListener('resize', handleResize);
+      // store for cleanup
+      (this as any)._resizeHandler = handleResize;
+
+      const animate = () => {
+        this.rafId = requestAnimationFrame(animate);
+        const stimulus: Stimulus = this.mesh.containsPx(mouseX, mouseY)
+          ? { x: mouseX, y: mouseY, strength: 50 }
+          : null;
+        this.mesh.update(stimulus);
+        this.syncPositions();
+        this.renderer.render(this.scene, this.camera);
+      };
+      animate();
+    }
+
+    private toScene(px: number, py: number) {
+      return { x: px - this.mesh.W / 2, y: this.mesh.H / 2 - py };
+    }
+
+    private clearObjects() {
+      this.dots.forEach(d => this.scene.remove(d));
+      this.lines.forEach(l => this.scene.remove(l));
+      this.dots = [];
+      this.lines = [];
+    }
+
+    private syncObjects() {
+      this.clearObjects();
+      const dotGeo = new THREE.CircleGeometry(1.5, 12);
+      const dotMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 });
+      for (const n of this.mesh.nodes) {
+        const dot = new THREE.Mesh(dotGeo, dotMat);
+        const { x, y } = this.toScene(n.base().x, n.base().y);
+        dot.position.set(x, y, 0);
+        this.scene.add(dot);
+        this.dots.push(dot);
+      }
+      const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.15 });
+      for (const [n1, n2] of this.mesh.edges) {
+        const { x: sx1, y: sy1 } = this.toScene(n1.base().x, n1.base().y);
+        const { x: sx2, y: sy2 } = this.toScene(n2.base().x, n2.base().y);
+        const geo = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(sx1, sy1, 0),
+          new THREE.Vector3(sx2, sy2, 0),
+        ]);
+        const line = new THREE.Line(geo, lineMat);
+        this.scene.add(line);
+        this.lines.push(line);
+      }
+    }
+
+    private syncPositions() {
+      const gap = 5;
+      for (let i = 0; i < this.mesh.nodes.length; i++) {
+        const { x, y } = this.mesh.nodes[i].pos();
+        const sc = this.toScene(x, y);
+        this.dots[i].position.set(sc.x, sc.y, 0);
+      }
+      for (let i = 0; i < this.mesh.edges.length; i++) {
+        const [n1, n2] = this.mesh.edges[i];
+        const sc1 = this.toScene(n1.pos().x, n1.pos().y);
+        const sc2 = this.toScene(n2.pos().x, n2.pos().y);
+        const angle = Math.atan2(sc2.y - sc1.y, sc2.x - sc1.x);
+        this.lines[i].geometry.setFromPoints([
+          new THREE.Vector3(sc1.x + Math.cos(angle) * gap, sc1.y + Math.sin(angle) * gap, 0),
+          new THREE.Vector3(sc2.x - Math.cos(angle) * gap, sc2.y - Math.sin(angle) * gap, 0),
+        ]);
+      }
+    }
+
+    onResize(W: number, H: number, mesh: MeshSystem) {
+      this.mesh = mesh;
+      this.syncObjects();
+    }
+
+    stop() {
+      cancelAnimationFrame(this.rafId);
+      window.removeEventListener('resize', (this as any)._resizeHandler);
+      this.clearObjects();
+      this.renderer.dispose();
+      this.renderer.domElement.remove();
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Controller
+  // ---------------------------------------------------------------
+  const container = document.getElementById('container') as HTMLElement;
+  let mesh = new MeshSystem(window.innerWidth, window.innerHeight);
+  mesh.build();
+
+  let renderer: Renderer | null = null;
+
+  function rebuildMesh(W: number, H: number) {
+    mesh = new MeshSystem(W, H);
+    mesh.build();
+    renderer?.onResize(W, H, mesh);
+  }
+
+  function setMode(mode: string) {
+    renderer?.stop();
+    container.innerHTML = '';
+
+    const micStatus = document.getElementById('mic-status') as HTMLElement;
+    micStatus.style.display = mode === 'p5mic' ? 'block' : 'none';
+    if (mode === 'p5mic' && micEnabled) micStatus.textContent = 'mic active';
+
+    if (mode === 'three') {
+      renderer = new ThreeRenderer((W, H) => rebuildMesh(W, H));
+    } else {
+      renderer = new P5Renderer(mode === 'p5mic', (W, H) => rebuildMesh(W, H));
+    }
+
+    renderer.start(container, mesh);
+  }
+
+  // Initial mode
+  setMode('p5');
+
+  // Mode switcher
+  const select = document.getElementById('mode-select') as HTMLSelectElement;
+  select.addEventListener('change', () => setMode(select.value));
+</script>

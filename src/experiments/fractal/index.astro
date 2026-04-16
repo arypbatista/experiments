@@ -1,0 +1,67 @@
+---
+---
+
+<div id="sketch" style="position:fixed;inset:0;overflow:hidden;"></div>
+
+<script>
+  import p5 from 'p5';
+
+  new p5((p: p5) => {
+    function rotateCoord(
+      x: number, y: number,
+      originX: number, originY: number,
+      angleDeg: number
+    ) {
+      const rad = (angleDeg * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const dx = x - originX;
+      const dy = y - originY;
+      return {
+        x: dx * cos - dy * sin + originX,
+        y: dx * sin + dy * cos + originY,
+      };
+    }
+
+    function drawFractal(
+      x: number, y: number,
+      angle: number, size: number, depth: number,
+      angleOffset: number
+    ) {
+      const x2Raw = x;
+      const y2Raw = y + size;
+      const { x: x2, y: y2 } = rotateCoord(x2Raw, y2Raw, x, y, angle);
+      p.line(x, y, x2, y2);
+      if (depth >= 1) {
+        drawFractal(x2, y2, angle - angleOffset, size / 1.61, depth - 1, angleOffset);
+        drawFractal(x2, y2, angle + angleOffset, size / 1.61, depth - 1, angleOffset);
+      }
+    }
+
+    p.setup = () => {
+      p.createCanvas(p.windowWidth, p.windowHeight).parent('sketch');
+    };
+
+    p.draw = () => {
+      const rootX = p.width / 2;
+      const rootY = p.height;
+      const maxRadius = Math.sqrt(rootX * rootX + rootY * rootY);
+      const dx = p.mouseX - rootX;
+      const dy = p.mouseY - rootY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const t = Math.sqrt(Math.min(dist / maxRadius, 1));
+      const angleOffset = t * 45;
+      const trunkSize = p.height * 0.2;
+
+      p.background('#000000');
+      p.stroke('#FFFFFF');
+      p.translate(rootX, rootY);
+      p.rotate(Math.PI);
+      drawFractal(0, 0, 0, trunkSize, 10, angleOffset);
+    };
+
+    p.windowResized = () => {
+      p.resizeCanvas(p.windowWidth, p.windowHeight);
+    };
+  });
+</script>
