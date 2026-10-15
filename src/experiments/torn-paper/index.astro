@@ -1,0 +1,950 @@
+---
+---
+
+<div id="tp-area">
+  <div id="tp-stage">
+    <canvas id="tp-canvas" aria-label="Torn paper"></canvas>
+    <svg id="tp-overlay" viewBox="0 0 800 600" aria-hidden="true">
+      <g id="tp-guides"><path id="tp-outline" /><g id="tp-handles"></g></g>
+    </svg>
+  </div>
+</div>
+
+<div id="tp-controls">
+  <div class="tp-head">
+    <span class="tp-title">TEAR</span>
+    <span class="tp-sub">shape of the torn edge and paper surface</span>
+  </div>
+  <p id="tp-error"></p>
+
+  <label><span id="smooth-label">smoothing: 0.25</span><input id="smooth" type="range" min="0" max="1" step="0.01" value="0.25" /></label>
+  <label><span id="wave-label">wave: 0.40</span><input id="wave" type="range" min="0" max="1" step="0.01" value="0.4" /></label>
+  <label><span id="jag-label">tear teeth: 0.50</span><input id="jag" type="range" min="0" max="1" step="0.01" value="0.5" /></label>
+  <label><span id="rimw-label">rim width: 0.50</span><input id="rimw" type="range" min="0" max="1" step="0.01" value="0.5" /></label>
+  <label><span id="rimvar-label">rim irregularity: 0.50</span><input id="rimvar" type="range" min="0" max="1" step="0.01" value="0.5" /></label>
+  <label><span id="relief-label">relief: 0.50</span><input id="relief" type="range" min="0" max="1" step="0.01" value="0.5" /></label>
+  <label><span id="lightA-label">light angle: 225</span><input id="lightA" type="range" min="0" max="360" step="1" value="225" /></label>
+  <label class="tp-row"><input type="checkbox" id="lightMouse" /> light follows mouse</label>
+
+  <div class="tp-swatches">
+    <button class="tp-swatch on" style="background:#c8553d" data-c="#c8553d" aria-label="Red"></button>
+    <button class="tp-swatch" style="background:#2f5d8a" data-c="#2f5d8a" aria-label="Blue"></button>
+    <button class="tp-swatch" style="background:#d9b88f" data-c="#d9b88f" aria-label="Kraft"></button>
+    <button class="tp-swatch" style="background:#3f7d5a" data-c="#3f7d5a" aria-label="Green"></button>
+    <button class="tp-swatch" style="background:#e8c547" data-c="#e8c547" aria-label="Yellow"></button>
+    <input type="color" id="custom" value="#c8553d" aria-label="Custom color" />
+  </div>
+
+  <div class="tp-head" style="margin-top:8px;">
+    <span class="tp-title">PRINT</span>
+    <span class="tp-sub">image inked on the paper face — or drop one on it</span>
+  </div>
+  <div class="tp-btns">
+    <label class="tp-btn">CHOOSE IMAGE<input type="file" id="imgFile" accept="image/*" hidden /></label>
+    <button class="tp-btn" id="imgRemove" disabled>REMOVE</button>
+  </div>
+  <div id="imgControls" hidden>
+    <select id="blend">
+      <option value="0" selected>Multiply</option>
+      <option value="1">Normal</option>
+      <option value="2">Screen</option>
+      <option value="3">Overlay</option>
+      <option value="4">Soft light</option>
+      <option value="5">Darken</option>
+      <option value="6">Color burn</option>
+    </select>
+    <label><span id="imgOpacity-label">opacity: 0.90</span><input id="imgOpacity" type="range" min="0" max="1" step="0.01" value="0.9" /></label>
+    <label><span id="imgScale-label">size: 0.60</span><input id="imgScale" type="range" min="0.1" max="2" step="0.01" value="0.6" /></label>
+    <label><span id="imgRot-label">rotation: 0</span><input id="imgRot" type="range" min="-180" max="180" step="1" value="0" /></label>
+    <label><span id="imgWear-label">ink wear: 0.25</span><input id="imgWear" type="range" min="0" max="1" step="0.01" value="0.25" /></label>
+    <label><span id="imgBleed-label">ink bleed: 0.20</span><input id="imgBleed" type="range" min="0" max="1" step="0.01" value="0.2" /></label>
+    <label class="tp-row"><input type="checkbox" id="imgMono" /> single ink (b/w)</label>
+    <label class="tp-row"><input type="checkbox" id="imgRim" /> print on white rim too</label>
+    <label class="tp-row"><input type="checkbox" id="imgMove" /> move image (drag · wheel = size)</label>
+  </div>
+
+  <div class="tp-head" style="margin-top:8px;">
+    <span class="tp-title">SAVED</span>
+    <span class="tp-sub">papers stored in this browser (localStorage)</span>
+  </div>
+  <div class="tp-btns">
+    <input id="saveName" type="text" placeholder="name" maxlength="40" />
+    <button class="tp-btn" id="saveBtn">SAVE</button>
+  </div>
+  <select id="savedList" aria-label="Saved papers"></select>
+  <div class="tp-btns">
+    <button class="tp-btn" id="openBtn">OPEN</button>
+    <button class="tp-btn tp-danger" id="deleteBtn">DELETE</button>
+  </div>
+
+  <div class="tp-head" style="margin-top:8px;">
+    <span class="tp-title">VIEW</span>
+  </div>
+  <label class="tp-row"><input type="checkbox" id="showGuides" checked /> show polygon</label>
+  <label class="tp-row"><input type="checkbox" id="transparent" /> export without background</label>
+</div>
+
+<div id="tp-actions">
+  <button class="tp-action" id="reseed">RETEAR [R]</button>
+  <button class="tp-action" id="clear">NEW SHAPE [N]</button>
+  <button class="tp-action tp-accent" id="exportPng">EXPORT PNG [E]</button>
+</div>
+
+<style is:global>
+  #tp-area {
+    position: fixed;
+    top: 48px; left: 24px; right: 272px; bottom: 72px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #tp-stage { position: relative; }
+  #tp-stage.dragover #tp-canvas { outline: 2px dashed #77ddff; outline-offset: -2px; }
+  #tp-canvas { width: 100%; height: 100%; display: block; border-radius: 4px; }
+  #tp-overlay { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  #tp-overlay.moving { cursor: move; }
+  #tp-handles circle { fill: #fff; stroke: #2f6fd6; stroke-width: 2; cursor: grab; }
+  #tp-handles circle.first { fill: #2f6fd6; }
+  #tp-outline { fill: none; stroke: #2f6fd6; stroke-width: 1.5; stroke-dasharray: 5 4; }
+
+  #tp-controls {
+    position: fixed; top: 64px; right: 24px; width: 224px;
+    max-height: calc(100vh - 140px); overflow-y: auto;
+    font-family: monospace; font-size: 11px; color: rgba(255,255,255,0.7);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  #tp-controls label { display: flex; flex-direction: column; gap: 3px; }
+  #tp-controls label.tp-row { flex-direction: row; align-items: center; gap: 6px; cursor: pointer; }
+  #tp-controls input[type=range] { accent-color: white; width: 100%; }
+  #tp-controls input[type=checkbox] { accent-color: white; margin: 0; }
+  #tp-controls select {
+    background: #000; border: 1px solid rgba(255,255,255,0.3); color: rgba(255,255,255,0.8);
+    font-family: monospace; font-size: 11px; padding: 4px 6px; cursor: pointer; width: 100%;
+  }
+  #imgControls { display: flex; flex-direction: column; gap: 8px; }
+  #imgControls[hidden] { display: none; }
+  .tp-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 2px; }
+  .tp-title { font-size: 12px; color: rgba(255,255,255,0.9); letter-spacing: 0.06em; }
+  .tp-sub { font-size: 10px; color: rgba(255,255,255,0.4); line-height: 1.4; }
+  #tp-error { color: #ff6b5b; display: none; margin: 0; }
+  .tp-swatches { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .tp-swatch { width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 1px solid rgba(255,255,255,0.25); cursor: pointer; }
+  .tp-swatch.on { box-shadow: 0 0 0 2px #000, 0 0 0 3px #fff; }
+  #custom { width: 26px; height: 24px; padding: 0; border: none; background: none; cursor: pointer; }
+  .tp-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tp-btn, .tp-action {
+    background: transparent; border: 1px solid rgba(255,255,255,0.4); color: rgba(255,255,255,0.7);
+    font-family: monospace; letter-spacing: 0.08em; cursor: pointer;
+  }
+  .tp-btn { font-size: 10px; padding: 4px 8px; }
+  .tp-btn:disabled { opacity: 0.35; cursor: default; }
+  #tp-controls label.tp-btn { display: inline-block; }
+  .tp-danger { border-color: rgba(255,110,90,0.5); color: rgba(255,140,120,0.85); }
+  #saveName {
+    flex: 1; min-width: 0; background: #000; border: 1px solid rgba(255,255,255,0.3);
+    color: rgba(255,255,255,0.8); font-family: monospace; font-size: 11px; padding: 4px 6px;
+  }
+
+  #tp-actions { position: fixed; bottom: 24px; right: 24px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .tp-action { font-size: 12px; padding: 6px 14px; }
+  .tp-accent { border-color: rgba(255,255,0,0.5); color: rgba(255,255,0,0.8); }
+
+  @media (max-width: 800px) {
+    #tp-area { top: 44px; left: 12px; right: 12px; bottom: calc(38vh + 64px); }
+    #tp-controls { top: auto; bottom: 64px; left: 12px; right: 12px; width: auto; max-height: 38vh; }
+    #tp-actions { bottom: 16px; right: 12px; left: 12px; }
+    .tp-action { font-size: 10px; padding: 6px 8px; }
+  }
+</style>
+
+<script>
+  // WebGL2 torn-paper renderer. Pass 1 builds a signed distance field of the outline,
+  // pass 2 shades the paper from it. See README.md for design decisions.
+
+  const SDF_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uPts;
+uniform int uM;
+out vec4 outColor;
+
+vec2 P(int i) { return texelFetch(uPts, ivec2(i, 0), 0).xy; }
+
+void main() {
+  vec2 p = vec2(gl_FragCoord.x, 600.0 - gl_FragCoord.y);
+  vec2 v0 = P(0);
+  float d = dot(p - v0, p - v0);
+  float s = 1.0;
+  for (int i = 0, j = uM - 1; i < uM; j = i, i++) {
+    vec2 vi = P(i), vj = P(j);
+    vec2 e = vj - vi, w = p - vi;
+    vec2 b = w - e * clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
+    d = min(d, dot(b, b));
+    bvec3 c = bvec3(p.y >= vi.y, p.y < vj.y, e.x * w.y > e.y * w.x);
+    if (all(c) || all(not(c))) s = -s;
+  }
+  outColor = vec4(s * sqrt(d), 0.0, 0.0, 1.0);
+}`;
+
+  const PAPER_FS = `#version 300 es
+precision highp float;
+
+uniform sampler2D uSdf;
+uniform float uScale;      // device px per design unit
+uniform float uH;          // canvas height in px
+uniform vec2  uOrigin;     // top-left corner (design units) — for cropped export
+uniform vec3  uColor;
+uniform vec3  uLight;
+uniform vec2  uOff;
+uniform float uWave, uJag, uRimW, uRimVar, uRelief;
+uniform bool  uHasShape, uTransparent;
+
+// Printed image
+uniform sampler2D uImg;
+uniform bool  uHasImg, uMono, uInkRim;
+uniform vec2  uImgCenter, uImgHalf;   // centre and half-size (design units)
+uniform float uImgRot, uImgOpacity, uWear, uBleed;
+uniform int   uBlend;
+out vec4 outColor;
+
+float hash(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x),
+             mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
+}
+float fbm(vec2 p) {
+  float s = 0.0, a = 0.5;
+  for (int i = 0; i < 5; i++) { s += a * noise(p); p = p * 2.03 + 17.1; a *= 0.5; }
+  return s;
+}
+
+float sdf(vec2 q) { return texture(uSdf, vec2(q.x / 800.0, 1.0 - q.y / 600.0)).x; }
+
+// Side waviness + tear teeth
+float wave(vec2 q) { return (fbm(q * 0.008 + uOff + 5.0) - 0.5) * 28.0 * uWave; }
+float jag(vec2 q, float o) {
+  float j = (fbm(q * 0.06 + uOff + o) - 0.5) * 9.0 + (fbm(q * 0.45 + uOff + o + 7.0) - 0.5) * 4.0;
+  return j * (0.15 + uJag * 1.7);
+}
+
+float height(vec2 q) {
+  return fbm(q * 0.9 + uOff) * 0.18
+       + fbm(vec2(q.x * 0.25, q.y * 1.1) + uOff + 3.0) * 0.14
+       + fbm(q * 0.006 + uOff) * 22.0;
+}
+
+// Relief light factor (1.0 = flat), with mottling
+float lightFactor(vec2 q) {
+  float e = 0.75;
+  float h0 = height(q);
+  float hx = height(q + vec2(e, 0)) - h0;
+  float hy = height(q + vec2(0, e)) - h0;
+  float k = 0.2 + uRelief * 1.6;
+  vec3 n = normalize(vec3(-hx * k, -hy * k, 1.0));
+  vec3 L = normalize(uLight);
+  float lit = dot(n, L) / L.z;
+  float mottle = 1.0 + (fbm(q * 0.012 + uOff + 40.0) - 0.5) * 0.14;
+  return mix(1.0, lit, 0.55) * mottle;
+}
+
+// Ink at q: colour (rgb) and coverage (a), with wear and bleed applied
+vec4 inkAt(vec2 q) {
+  if (!uHasImg) return vec4(0.0);
+  vec2 d = q - uImgCenter;
+  float c = cos(uImgRot), s = sin(uImgRot);
+  vec2 l = vec2(d.x * c + d.y * s, -d.x * s + d.y * c);
+  // bleed: ink drifts slightly along the fibers
+  l += (vec2(fbm(q * 0.35 + uOff + 70.0), fbm(q * 0.35 + uOff + 90.0)) - 0.5) * uBleed * 4.0;
+  vec2 uv = l / (2.0 * uImgHalf) + 0.5;
+  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return vec4(0.0);
+  vec4 t = texture(uImg, uv, uBleed * 1.2);   // mipmap bias = ink spreading
+  if (uMono) t.rgb = vec3(dot(t.rgb, vec3(0.299, 0.587, 0.114)));
+  // wear: ink misses the paper's valleys, plus worn patches
+  float n = fbm(q * 0.7 + uOff + 120.0) * 0.6 + noise(q * 2.5 + uOff) * 0.4;
+  float wear = smoothstep(uWear * 0.75, uWear * 0.75 + 0.18, n);
+  wear *= 1.0 - uWear * 0.6 * smoothstep(0.55, 0.75, fbm(q * 0.02 + uOff + 150.0));
+  t.a *= wear * uImgOpacity;
+  return t;
+}
+
+vec3 blendInk(vec3 b, vec3 s) {
+  if (uBlend == 0) return b * s;                                         // multiply
+  if (uBlend == 1) return s;                                             // normal
+  if (uBlend == 2) return 1.0 - (1.0 - b) * (1.0 - s);                   // screen
+  if (uBlend == 3) return mix(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(0.5, b));  // overlay
+  if (uBlend == 4) return mix(2.0 * b * s + b * b * (1.0 - 2.0 * s),
+                              sqrt(b) * (2.0 * s - 1.0) + 2.0 * b * (1.0 - s), step(0.5, s));  // soft light
+  if (uBlend == 5) return min(b, s);                                     // darken
+  return 1.0 - min(vec3(1.0), (1.0 - b) / max(s, vec3(0.001)));          // color burn
+}
+
+vec3 printOn(vec3 base, vec4 ink) { return mix(base, blendInk(base, ink.rgb), ink.a); }
+
+void main() {
+  vec2 q = uOrigin + vec2(gl_FragCoord.x, uH - gl_FragCoord.y) / uScale;
+  vec3 bg = vec3(0.914, 0.894, 0.855) * (1.0 + (noise(q * 1.7) - 0.5) * 0.05);
+
+  if (!uHasShape) {
+    outColor = uTransparent ? vec4(0.0) : vec4(bg, 1.0);
+    return;
+  }
+
+  float D = sdf(q);
+  float wv = wave(q);
+
+  // Shadows (premultiplied): soft + contact
+  float sSoft = (1.0 - smoothstep(-14.0, 18.0, sdf(q - vec2(4.0, 12.0)) - wv)) * 0.2;
+  float sHard = (1.0 - smoothstep(-1.5, 2.5, sdf(q - vec2(0.5, 1.5)) - wv - jag(q, 0.0))) * 0.28;
+  float sh = max(sSoft, sHard);
+  vec4 acc = vec4(vec3(0.165, 0.125, 0.08) * sh, sh);
+
+  // Far from the paper, nothing else to do
+  if (D - wv > 40.0) {
+    outColor = uTransparent ? acc : vec4(bg * (1.0 - acc.a) + acc.rgb, 1.0);
+    return;
+  }
+
+  // White rim width: even at irregularity 0; at 1 ranges from almost nothing to ~3x
+  float w0 = 2.0 + uRimW * 12.0;
+  float nA = clamp((fbm(q * 0.015 + uOff + 60.0) - 0.3) * 2.5, 0.0, 1.0);
+  float nB = fbm(q * 0.06 + uOff + 80.0) - 0.5;
+  float rimWidth = max(0.5, w0 * mix(1.0, 0.1 + 2.8 * nA * nA + 0.8 * nB, uRimVar));
+  float dR = D - wv - jag(q, 0.0);
+  float dF = D - wv + rimWidth - jag(q, 31.0) * 0.8;
+
+  // Local edge frame: normal = SDF gradient
+  vec2 g = vec2(sdf(q + vec2(1, 0)) - sdf(q - vec2(1, 0)), sdf(q + vec2(0, 1)) - sdf(q - vec2(0, 1)));
+  g = normalize(g + 1e-5);
+  vec2 t = vec2(-g.y, g.x);
+  // Fibers: long across the edge, thin along it
+  vec2 fib = vec2(dot(q, t) * 1.1, D * 0.12);
+
+  float lf = lightFactor(q);
+  vec4 ink = inkAt(q);
+
+  // White rim
+  float core = 1.0 - smoothstep(-0.6, 0.6, dR);
+  float hair = smoothstep(0.52, 0.66, fbm(fib + uOff + 11.0) - dR * 0.035) * (1.0 - smoothstep(0.0, 8.0, dR));
+  float thin = smoothstep(-6.0, 0.0, dR);
+  float rimA = max(core, hair * 0.85) * (1.0 - thin * 0.15);
+  float grainR = 1.0 + (noise(q * 2.2 + uOff) - 0.5) * 0.10;
+  vec3 rimPaper = vec3(0.985, 0.975, 0.95);
+  if (uInkRim) rimPaper = printOn(rimPaper, ink);
+  vec3 rimCol = rimPaper * lf * grainR * (1.0 - thin * 0.05);
+  acc = vec4(rimCol * rimA, rimA) + acc * (1.0 - rimA);
+
+  // Coloured face
+  float faceCore = 1.0 - smoothstep(-0.6, 0.6, dF);
+  float fHair = smoothstep(0.5, 0.64, fbm(fib * vec2(1.2, 1.4) + uOff + 23.0) - dF * 0.05) * (1.0 - smoothstep(0.0, 6.0, dF));
+  float faceA = max(faceCore, fHair * 0.8);
+  float fade = smoothstep(-5.0, 0.5, dF);
+  float grainF = 1.0 + (noise(q * 2.2 + uOff + 3.0) - 0.5) * 0.16;
+  vec3 faceBase = printOn(mix(uColor, vec3(0.97, 0.95, 0.92), fade * 0.3), ink * vec4(1, 1, 1, 1.0 - fade * 0.5));
+  vec3 faceCol = faceBase * lf * grainF;
+  acc = vec4(faceCol * faceA, faceA) + acc * (1.0 - faceA);
+
+  outColor = uTransparent ? acc : vec4(bg * (1.0 - acc.a) + acc.rgb, 1.0);
+}`;
+
+  type Pt = [number, number];
+
+  const $ = (id: string) => document.getElementById(id) as any;
+  const canvas = $('tp-canvas') as HTMLCanvasElement;
+  const overlay = $('tp-overlay') as SVGSVGElement;
+  const stage = $('tp-stage') as HTMLElement;
+  const area = $('tp-area') as HTMLElement;
+
+  function mulberry32(a: number) {
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+
+  // Starting polygon
+  let pts: Pt[] = [[230, 170], [470, 130], [610, 220], [580, 420], [400, 470], [260, 400], [300, 290]];
+  let closed = true;
+  let seed = Math.floor(Math.random() * 1e9);
+  let colorHex = '#c8553d';
+  let color = [0xc8, 0x55, 0x3d].map(v => v / 255);
+  let light = [0, 0, 0.75];
+  let outlinePts: Pt[] = [];
+
+  // ---------- Layout: fit a 4:3 stage into the available area ----------
+
+  function fitStage() {
+    const aw = area.clientWidth, ah = area.clientHeight;
+    const w = Math.max(1, Math.min(aw, ah * 4 / 3));
+    stage.style.width = `${w}px`;
+    stage.style.height = `${w * 3 / 4}px`;
+  }
+  fitStage();
+
+  // ---------- WebGL ----------
+
+  function showError(msg: string) {
+    $('tp-error').textContent = msg;
+    $('tp-error').style.display = msg ? 'block' : 'none';
+  }
+
+  function fail(msg: string): never {
+    showError(msg);
+    throw new Error(msg);
+  }
+
+  const gl = canvas.getContext('webgl2', { premultipliedAlpha: true }) as WebGL2RenderingContext;
+  if (!gl) fail('WebGL2 is not supported in this browser.');
+  if (!gl.getExtension('EXT_color_buffer_float')) fail('Missing EXT_color_buffer_float extension.');
+
+  const VS = `#version 300 es
+  in vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }`;
+
+  function program(fsSrc: string) {
+    const sh = (type: number, src: string) => {
+      const s = gl.createShader(type)!;
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) fail(gl.getShaderInfoLog(s) ?? 'shader error');
+      return s;
+    };
+    const p = gl.createProgram()!;
+    gl.attachShader(p, sh(gl.VERTEX_SHADER, VS));
+    gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fsSrc));
+    gl.bindAttribLocation(p, 0, 'p');
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) fail(gl.getProgramInfoLog(p) ?? 'link error');
+    const u: Record<string, WebGLUniformLocation | null> = {};
+    return { p, u: (n: string) => (n in u ? u[n] : (u[n] = gl.getUniformLocation(p, n))) };
+  }
+  const sdfProg = program(SDF_FS);
+  const paperProg = program(PAPER_FS);
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+  function makeTex(filter: number) {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return t;
+  }
+  const ptsTex = makeTex(gl.NEAREST);
+  const sdfTex = makeTex(gl.LINEAR);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, 800, 600, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  // Printed image: mipmapped texture (for ink bleed)
+  const imgTex = makeTex(gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 0]));
+  const img = { loaded: false, aspect: 1, center: [400, 300] as Pt, source: null as HTMLCanvasElement | null };
+  // Half-size in design units: "size" = fraction of canvas width
+  const imgHalf = (): Pt => {
+    const w = 800 * +$('imgScale').value;
+    return [w / 2, w / img.aspect / 2];
+  };
+
+  gl.bindTexture(gl.TEXTURE_2D, sdfTex);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sdfTex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  // ---------- Outline ----------
+
+  // Point on edge i: blend between straight line and Catmull-Rom by smoothing
+  function edgePoint(i: number, u: number, s: number): Pt {
+    const n = pts.length, P = (k: number) => pts[(k + n) % n];
+    const p0 = P(i - 1), p1 = P(i), p2 = P(i + 1), p3 = P(i + 2);
+    const cr = (d: number) => 0.5 * ((2 * p1[d]) + (-p0[d] + p2[d]) * u + (2 * p0[d] - 5 * p1[d] + 4 * p2[d] - p3[d]) * u * u
+      + (-p0[d] + 3 * p1[d] - 3 * p2[d] + p3[d]) * u * u * u);
+    const ln = (d: number) => p1[d] + (p2[d] - p1[d]) * u;
+    return [ln(0) + (cr(0) - ln(0)) * s, ln(1) + (cr(1) - ln(1)) * s];
+  }
+
+  // Straight sides: vertices only. With smoothing: sampled curve
+  function outline(s: number): Pt[] {
+    if (s === 0) return pts.slice();
+    const per = Math.max(4, Math.floor(400 / pts.length));
+    const out: Pt[] = [];
+    for (let i = 0; i < pts.length; i++) for (let k = 0; k < per; k++) out.push(edgePoint(i, k / per, s));
+    return out;
+  }
+
+  function toPath(p: Pt[]) {
+    return 'M' + p.map(q => q[0].toFixed(1) + ',' + q[1].toFixed(1)).join('L') + 'Z';
+  }
+
+  // ---------- Render ----------
+
+  function updateShape() {
+    if (!closed || pts.length < 3) { outlinePts = []; return; }
+    outlinePts = outline(+$('smooth').value);
+    const M = outlinePts.length;
+    const data = new Float32Array(M * 4);
+    outlinePts.forEach((p, i) => { data[i * 4] = p[0]; data[i * 4 + 1] = p[1]; });
+    gl.bindTexture(gl.TEXTURE_2D, ptsTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, M, 1, 0, gl.RGBA, gl.FLOAT, data);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, 800, 600);
+    gl.useProgram(sdfProg.p);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, ptsTex);
+    gl.uniform1i(sdfProg.u('uPts'), 0);
+    gl.uniform1i(sdfProg.u('uM'), M);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  // origin/scale/w/h allow exporting at another resolution or cropped
+  function drawPaper({ origin = [0, 0] as Pt, scale, w, h, transparent = false }: { origin?: Pt; scale?: number; w?: number; h?: number; transparent?: boolean } = {}) {
+    if (scale === undefined || w === undefined || h === undefined) {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      w = Math.round(canvas.clientWidth * dpr); h = Math.round(canvas.clientHeight * dpr);
+      scale = w / 800;
+    }
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    const rand = mulberry32(seed);
+    gl.viewport(0, 0, w, h);
+    gl.useProgram(paperProg.p);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sdfTex);
+    const u = paperProg.u;
+    gl.uniform1i(u('uSdf'), 0);
+    gl.uniform1f(u('uScale'), scale);
+    gl.uniform1f(u('uH'), h);
+    gl.uniform2fv(u('uOrigin'), origin);
+    gl.uniform3fv(u('uColor'), color);
+    gl.uniform3fv(u('uLight'), light);
+    gl.uniform2f(u('uOff'), rand() * 200, rand() * 200);
+    gl.uniform1f(u('uWave'), +$('wave').value);
+    gl.uniform1f(u('uJag'), +$('jag').value);
+    gl.uniform1f(u('uRimW'), +$('rimw').value);
+    gl.uniform1f(u('uRimVar'), +$('rimvar').value);
+    gl.uniform1f(u('uRelief'), +$('relief').value);
+    gl.uniform1i(u('uHasShape'), outlinePts.length ? 1 : 0);
+    gl.uniform1i(u('uTransparent'), transparent ? 1 : 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, imgTex);
+    gl.uniform1i(u('uImg'), 1);
+    gl.uniform1i(u('uHasImg'), img.loaded ? 1 : 0);
+    if (img.loaded) {
+      gl.uniform2fv(u('uImgCenter'), img.center);
+      gl.uniform2fv(u('uImgHalf'), imgHalf());
+      gl.uniform1f(u('uImgRot'), +$('imgRot').value * Math.PI / 180);
+      gl.uniform1f(u('uImgOpacity'), +$('imgOpacity').value);
+      gl.uniform1f(u('uWear'), +$('imgWear').value);
+      gl.uniform1f(u('uBleed'), +$('imgBleed').value);
+      gl.uniform1i(u('uBlend'), +$('blend').value);
+      gl.uniform1i(u('uMono'), $('imgMono').checked ? 1 : 0);
+      gl.uniform1i(u('uInkRim'), $('imgRim').checked ? 1 : 0);
+    }
+    gl.activeTexture(gl.TEXTURE0);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  let frame = false, shapeDirty = true;
+  function schedule(shape: boolean) {
+    if (shape) shapeDirty = true;
+    if (frame) return;
+    frame = true;
+    requestAnimationFrame(() => {
+      frame = false;
+      if (shapeDirty) { updateShape(); shapeDirty = false; }
+      renderGuides();
+      drawPaper();
+    });
+  }
+
+  // ---------- Guides and editing ----------
+
+  function renderGuides() {
+    const g = $('tp-handles');
+    g.innerHTML = '';
+    let d = '';
+    if (closed && pts.length >= 3) d = toPath(outlinePts.length ? outlinePts : pts);
+    else if (pts.length) d = 'M' + pts.map(q => q.join(',')).join('L');
+    $('tp-outline').setAttribute('d', d);
+    pts.forEach((p, i) => {
+      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('cx', String(p[0])); c.setAttribute('cy', String(p[1]));
+      c.setAttribute('r', i === 0 && !closed ? '8' : '6');
+      if (i === 0 && !closed) c.classList.add('first');
+      c.dataset.i = String(i);
+      g.appendChild(c);
+    });
+  }
+
+  function svgPoint(e: MouseEvent): Pt {
+    const pt = overlay.createSVGPoint();
+    pt.x = e.clientX; pt.y = e.clientY;
+    const r = pt.matrixTransform(overlay.getScreenCTM()!.inverse());
+    return [Math.max(0, Math.min(800, r.x)), Math.max(0, Math.min(600, r.y))];
+  }
+
+  function nearestEdge(q: Pt) {
+    let best = { i: -1, d: Infinity };
+    const n = pts.length;
+    for (let i = 0; i < (closed ? n : n - 1); i++) {
+      const a = pts[i], b = pts[(i + 1) % n];
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const u = Math.max(0, Math.min(1, ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)));
+      const d = Math.hypot(a[0] + dx * u - q[0], a[1] + dy * u - q[1]);
+      if (d < best.d) best = { i, d };
+    }
+    return best;
+  }
+
+  const vertexIndex = (e: Event) => (e.target as SVGElement).dataset?.i;
+
+  let drag: number | null = null;
+  let imgDrag: { start: Pt; center: Pt } | null = null;
+
+  overlay.addEventListener('pointerdown', e => {
+    if ($('imgMove').checked && img.loaded) {
+      imgDrag = { start: svgPoint(e), center: img.center.slice() as Pt };
+      overlay.setPointerCapture(e.pointerId);
+      return;
+    }
+    const i = vertexIndex(e);
+    if (i !== undefined) {
+      if (!closed && +i === 0 && pts.length >= 3) { closed = true; schedule(true); return; }
+      drag = +i;
+      overlay.setPointerCapture(e.pointerId);
+      return;
+    }
+    if (!closed) { pts.push(svgPoint(e)); schedule(true); }
+  });
+  overlay.addEventListener('pointermove', e => {
+    if (imgDrag) {
+      const q = svgPoint(e);
+      img.center = [imgDrag.center[0] + q[0] - imgDrag.start[0], imgDrag.center[1] + q[1] - imgDrag.start[1]];
+      schedule(false);
+      return;
+    }
+    if ($('lightMouse').checked && drag === null) {
+      const [x, y] = svgPoint(e);
+      light = [-(x - 400) / 400, -(y - 300) / 300, 0.75];
+      schedule(false);
+    }
+    if (drag === null) return;
+    pts[drag] = svgPoint(e);
+    schedule(true);
+  });
+  overlay.addEventListener('pointerup', () => { drag = null; imgDrag = null; });
+
+  overlay.addEventListener('dblclick', e => {
+    if ($('imgMove').checked) return;
+    const i = vertexIndex(e);
+    if (i !== undefined) {
+      if (pts.length > 3 || !closed) pts.splice(+i, 1);
+    } else if (closed) {
+      const q = svgPoint(e), ne = nearestEdge(q);
+      if (ne.d < 25) pts.splice(ne.i + 1, 0, q);
+    }
+    schedule(true);
+  });
+
+  // ---------- Controls ----------
+
+  function setLightAngle() {
+    const a = +$('lightA').value * Math.PI / 180;
+    light = [Math.cos(a) * 0.8, Math.sin(a) * 0.8, 0.75];
+  }
+  setLightAngle();
+
+  // Slider value labels: [id, label, decimals]
+  const SLIDERS: [string, string, number][] = [
+    ['smooth', 'smoothing', 2], ['wave', 'wave', 2], ['jag', 'tear teeth', 2],
+    ['rimw', 'rim width', 2], ['rimvar', 'rim irregularity', 2], ['relief', 'relief', 2],
+    ['lightA', 'light angle', 0], ['imgOpacity', 'opacity', 2], ['imgScale', 'size', 2],
+    ['imgRot', 'rotation', 0], ['imgWear', 'ink wear', 2], ['imgBleed', 'ink bleed', 2],
+  ];
+  const updateLabel = (id: string) => {
+    const [, name, dec] = SLIDERS.find(s => s[0] === id)!;
+    $(`${id}-label`).textContent = `${name}: ${(+$(id).value).toFixed(dec)}`;
+  };
+  SLIDERS.forEach(([id]) => $(id).addEventListener('input', () => updateLabel(id)));
+
+  $('smooth').addEventListener('input', () => schedule(true));
+  ['wave', 'jag', 'rimw', 'rimvar', 'relief'].forEach(id => $(id).addEventListener('input', () => schedule(false)));
+  $('lightA').addEventListener('input', () => { setLightAngle(); schedule(false); });
+  $('lightMouse').addEventListener('change', (e: Event) => {
+    if (!(e.target as HTMLInputElement).checked) { setLightAngle(); schedule(false); }
+  });
+  $('showGuides').addEventListener('change', (e: Event) => {
+    $('tp-guides').style.display = (e.target as HTMLInputElement).checked ? '' : 'none';
+  });
+  window.addEventListener('resize', () => { fitStage(); schedule(false); });
+
+  function reseed() { seed = Math.floor(Math.random() * 1e9); schedule(false); }
+  function newShape() { pts = []; closed = false; schedule(true); }
+  $('reseed').addEventListener('click', reseed);
+  $('clear').addEventListener('click', newShape);
+  $('exportPng').addEventListener('click', exportPng);
+
+  window.addEventListener('keydown', e => {
+    const target = e.target as HTMLElement;
+    if (target.tagName === 'SELECT' || (target as HTMLInputElement).type === 'text') return;
+    if (e.key === 'Enter' && !closed && pts.length >= 3) { closed = true; schedule(true); }
+    if (e.key === 'Escape' && !closed) { pts.pop(); schedule(true); }
+    if (e.key === 'r' || e.key === 'R') reseed();
+    if (e.key === 'n' || e.key === 'N') newShape();
+    if (e.key === 'e' || e.key === 'E') exportPng();
+  });
+
+  function setColor(hex: string) {
+    colorHex = hex;
+    color = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
+    document.querySelectorAll<HTMLElement>('.tp-swatch').forEach(b => b.classList.toggle('on', b.dataset.c === hex));
+    schedule(false);
+  }
+  document.querySelectorAll<HTMLElement>('.tp-swatch').forEach(b => b.addEventListener('click', () => setColor(b.dataset.c!)));
+  $('custom').addEventListener('input', (e: Event) => setColor((e.target as HTMLInputElement).value));
+
+  // ---------- Printed image ----------
+
+  function loadImage(file?: File) {
+    if (!file || !file.type.startsWith('image/')) return;
+    loadImageSrc(URL.createObjectURL(file));
+  }
+
+  // center: keep a saved position instead of centring on the paper
+  function loadImageSrc(url: string, center?: Pt) {
+    const im = new Image();
+    if (/^https?:/.test(url)) im.crossOrigin = 'anonymous';
+    im.onerror = () => showError('Could not load the image.');
+    im.onload = () => {
+      // Cap size (max 2048 px per side) to stay under the max texture size
+      const k = Math.min(1, 2048 / Math.max(im.width, im.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+      c.getContext('2d')!.drawImage(im, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      gl.bindTexture(gl.TEXTURE_2D, imgTex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      img.loaded = true;
+      img.aspect = c.width / c.height;
+      img.source = c;
+      if (center) img.center = center;
+      // centre on the paper
+      else if (outlinePts.length) {
+        const xs = outlinePts.map(p => p[0]), ys = outlinePts.map(p => p[1]);
+        img.center = [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+      }
+      $('imgControls').hidden = false;
+      $('imgRemove').disabled = false;
+      schedule(false);
+    };
+    im.src = url;
+  }
+
+  $('imgFile').addEventListener('change', (e: Event) => loadImage((e.target as HTMLInputElement).files?.[0]));
+  function removeImage() {
+    img.loaded = false;
+    img.source = null;
+    $('imgControls').hidden = true;
+    $('imgRemove').disabled = true;
+    $('imgFile').value = '';
+    $('imgMove').checked = false;
+    overlay.classList.remove('moving');
+    schedule(false);
+  }
+  $('imgRemove').addEventListener('click', removeImage);
+  ['blend', 'imgOpacity', 'imgScale', 'imgRot', 'imgWear', 'imgBleed', 'imgMono', 'imgRim']
+    .forEach(id => $(id).addEventListener('input', () => schedule(false)));
+  $('imgMove').addEventListener('change', (e: Event) => overlay.classList.toggle('moving', (e.target as HTMLInputElement).checked));
+
+  stage.addEventListener('dragover', e => { e.preventDefault(); stage.classList.add('dragover'); });
+  stage.addEventListener('dragleave', () => stage.classList.remove('dragover'));
+  stage.addEventListener('drop', e => {
+    e.preventDefault();
+    stage.classList.remove('dragover');
+    loadImage(e.dataTransfer?.files[0]);
+  });
+
+  // Wheel = image size (in move mode)
+  overlay.addEventListener('wheel', e => {
+    if (!$('imgMove').checked || !img.loaded) return;
+    e.preventDefault();
+    const sc = $('imgScale') as HTMLInputElement;
+    sc.value = String(Math.max(+sc.min, Math.min(+sc.max, +sc.value * Math.exp(-e.deltaY * 0.001))));
+    updateLabel('imgScale');
+    schedule(false);
+  }, { passive: false });
+
+  // ---------- Export PNG (2x; cropped to the paper when transparent) ----------
+
+  function exportPng() {
+    if (!outlinePts.length) return;
+    const transparent = $('transparent').checked;
+    const S = 2;
+    let x0 = 0, y0 = 0, x1 = 800, y1 = 600;
+    if (transparent) {
+      const m = 50;
+      x0 = Math.max(0, Math.min(...outlinePts.map(p => p[0])) - m);
+      y0 = Math.max(0, Math.min(...outlinePts.map(p => p[1])) - m);
+      x1 = Math.min(800, Math.max(...outlinePts.map(p => p[0])) + m);
+      y1 = Math.min(600, Math.max(...outlinePts.map(p => p[1])) + m);
+    }
+    const w = Math.round((x1 - x0) * S), h = Math.round((y1 - y0) * S);
+    drawPaper({ origin: [x0, y0], scale: S, w, h, transparent });
+    const out = document.createElement('canvas');
+    out.width = w; out.height = h;
+    out.getContext('2d')!.drawImage(canvas, 0, 0);
+    drawPaper();
+    out.toBlob(b => {
+      if (!b) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(b);
+      a.download = 'torn-paper.png';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }, 'image/png');
+  }
+
+  // ---------- Saved papers (localStorage) ----------
+
+  const STORE_KEY = 'torn-paper:saves';
+  const SAVED_VALUES = ['smooth', 'wave', 'jag', 'rimw', 'rimvar', 'relief', 'lightA',
+    'blend', 'imgOpacity', 'imgScale', 'imgRot', 'imgWear', 'imgBleed'];
+  const SAVED_CHECKS = ['lightMouse', 'imgMono', 'imgRim', 'showGuides', 'transparent'];
+
+  interface SavedPaper {
+    name: string;
+    savedAt: number;
+    pts: Pt[];
+    closed: boolean;
+    seed: number;
+    color: string;
+    values: Record<string, string>;
+    checks: Record<string, boolean>;
+    image: { src: string; center: Pt } | null;
+  }
+
+  function readSaves(): SavedPaper[] {
+    try {
+      const list = JSON.parse(localStorage.getItem(STORE_KEY) ?? '[]');
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeSaves(list: SavedPaper[]): boolean {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify(list));
+      return true;
+    } catch {
+      return false; // quota exceeded or storage blocked
+    }
+  }
+
+  // Printed image as a data URL, downscaled to keep it within the storage quota
+  function imageDataUrl(type: 'image/png' | 'image/jpeg', maxSide: number): string {
+    const src = img.source!;
+    const k = Math.min(1, maxSide / Math.max(src.width, src.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(src.width * k); c.height = Math.round(src.height * k);
+    c.getContext('2d')!.drawImage(src, 0, 0, c.width, c.height);
+    return c.toDataURL(type, 0.85);
+  }
+
+  function snapshot(name: string): SavedPaper {
+    const values: Record<string, string> = {};
+    SAVED_VALUES.forEach(id => { values[id] = $(id).value; });
+    const checks: Record<string, boolean> = {};
+    SAVED_CHECKS.forEach(id => { checks[id] = $(id).checked; });
+    return {
+      name, savedAt: Date.now(), pts: pts.map(p => [p[0], p[1]] as Pt), closed, seed, color: colorHex,
+      values, checks, image: null,
+    };
+  }
+
+  function refreshSavedList(selected?: string) {
+    const list = readSaves().sort((a, b) => b.savedAt - a.savedAt);
+    const sel = $('savedList') as HTMLSelectElement;
+    sel.innerHTML = '';
+    for (const s of list) {
+      const date = new Date(s.savedAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+      sel.add(new Option(`${s.name} · ${date}`, s.name, false, s.name === selected));
+    }
+    if (!list.length) sel.add(new Option('no saved papers', ''));
+    sel.disabled = !list.length;
+    $('openBtn').disabled = !list.length;
+    $('deleteBtn').disabled = !list.length;
+  }
+
+  function savePaper() {
+    const name = ($('saveName').value as string).trim() || `paper ${readSaves().length + 1}`;
+    const entry = snapshot(name);
+    const others = readSaves().filter(s => s.name !== name);
+    // Try a PNG first (keeps transparency), then smaller JPEGs if the quota is exceeded
+    const attempts: [('image/png' | 'image/jpeg'), number][] = img.loaded && img.source
+      ? [['image/png', 1024], ['image/jpeg', 1024], ['image/jpeg', 512]]
+      : [['image/png', 0]];
+    for (const [type, side] of attempts) {
+      entry.image = img.loaded && img.source ? { src: imageDataUrl(type, side), center: img.center.slice() as Pt } : null;
+      if (writeSaves([...others, entry])) {
+        showError('');
+        $('saveName').value = name;
+        refreshSavedList(name);
+        return;
+      }
+    }
+    showError('Could not save: browser storage is full or blocked.');
+  }
+
+  function openPaper(name: string) {
+    const s = readSaves().find(x => x.name === name);
+    if (!s) return;
+    pts = s.pts.map(p => [p[0], p[1]] as Pt);
+    closed = s.closed;
+    seed = s.seed;
+    for (const [id, v] of Object.entries(s.values ?? {})) {
+      if (!$(id)) continue;
+      $(id).value = v;
+      if (SLIDERS.some(x => x[0] === id)) updateLabel(id);
+    }
+    for (const [id, v] of Object.entries(s.checks ?? {})) if ($(id)) $(id).checked = v;
+    $('tp-guides').style.display = $('showGuides').checked ? '' : 'none';
+    $('custom').value = s.color;
+    setColor(s.color);
+    setLightAngle();
+    if (s.image) loadImageSrc(s.image.src, s.image.center);
+    else removeImage();
+    $('saveName').value = s.name;
+    showError('');
+    schedule(true);
+  }
+
+  function deletePaper(name: string) {
+    if (!name || !confirm(`Delete "${name}"?`)) return;
+    if (!writeSaves(readSaves().filter(s => s.name !== name))) showError('Could not update browser storage.');
+    refreshSavedList();
+  }
+
+  $('saveBtn').addEventListener('click', savePaper);
+  $('saveName').addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') savePaper(); });
+  $('openBtn').addEventListener('click', () => openPaper($('savedList').value));
+  $('deleteBtn').addEventListener('click', () => deletePaper($('savedList').value));
+  refreshSavedList();
+
+  schedule(true);
+  const imgParam = new URLSearchParams(location.search).get('img');
+  if (imgParam) requestAnimationFrame(() => requestAnimationFrame(() => loadImageSrc(imgParam)));
+</script>
