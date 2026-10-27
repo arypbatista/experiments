@@ -11,27 +11,27 @@ A personal creative coding gallery. Each experiment is an isolated, full-page ca
 ## Structure
 
 ```
-docs/
-└── how-it-works.md               # project structure and experiment conventions explained
 src/
 ├── experiments/
 │   ├── types.ts                  # ExperimentMeta + ExperimentEntry types
 │   └── <slug>/
 │       ├── meta.ts               # title, description, tags, date, thumbnail?
-│       ├── thumbnail.jpg         # optional screenshot, imported in meta.ts
+│       ├── thumbnail.png         # optional screenshot, imported in meta.ts
 │       ├── index.astro           # experiment content (no layout, no page)
-│       └── README.md             # optional: physics, controls, tuning notes
+│       └── README.md             # optional, shown to visitors via the README.md button
 ├── layouts/
 │   ├── BaseLayout.astro          # base HTML shell (head, global CSS)
-│   └── ExperimentLayout.astro    # full-viewport wrapper: ← back nav + title/tags overlay
+│   └── ExperimentLayout.astro    # full-viewport wrapper: nav, notes panel, README modal
 ├── components/
 │   ├── Sidebar.astro             # fixed left sidebar with tag filters + social links
 │   └── ExperimentCard.astro      # thumbnail card used in the gallery grid
 └── pages/
     ├── index.astro               # gallery: auto-discovers all experiments via glob
     └── experiments/
-        └── [slug].astro          # dynamic route: wraps experiment in ExperimentLayout
+        └── [slug].astro          # dynamic route: wraps experiment in ExperimentLayout, loads README.md raw
 ```
+
+`.claude/skills/` has project skills: `threejs-*` (Three.js reference) and `git-commit`. `pnpm-workspace.yaml` holds `allowBuilds` for esbuild and sharp — pnpm needs it to run their build scripts.
 
 ## Adding an experiment
 
@@ -51,6 +51,8 @@ const meta: ExperimentMeta = {
 export default meta;
 ```
 
+`date` is an ISO date or datetime (`'2026-04-07T23:16:18'`). The gallery sorts by plain string compare, newest first — use a datetime to order experiments made the same day.
+
 3. Add `index.astro` with the experiment content — no layout needed, ExperimentLayout is applied automatically by `[slug].astro`:
 
 ```astro
@@ -69,7 +71,7 @@ The gallery and routing pick it up automatically — no registration needed.
 
 ### README
 
-A `README.md` inside the experiment folder is optional but encouraged for any experiment with non-trivial logic. It is the right place for anything too detailed for `description` or `notes` in `meta.ts`: physics constants, control schemes, algorithmic decisions, tuning tips.
+A `README.md` inside the experiment folder is optional but expected for any experiment with non-trivial logic (custom shaders, physics, algorithms). It is **public**: `[slug].astro` imports it raw and the layout renders it in a modal behind a "README.md" button, so write it for a curious visitor, not as private notes. It is the right place for anything too detailed for `description` or `notes` in `meta.ts`: physics constants, control schemes, algorithmic decisions, tuning tips.
 
 **Structure** — use these sections as needed, in this order:
 
@@ -115,15 +117,17 @@ Bullet list of "if X then adjust Y" notes — useful when revisiting the experim
 - **Animation feels slow**: increase `SPEED`.
 ```
 
+Two optional sections that pay off for complex pieces (see `torn-paper`): **Design decisions** (what was tried and dropped, and why) and **Known limitations**. Keep the README in sync with the code — stale constants are worse than none.
+
 Keep it short. Not every section is required — a simple particle effect may only need "What it does" and "Tuning tips". The goal is that someone (including future-you) can understand the experiment's design decisions without reading all the code.
 
 ### Thumbnails
 
-Thumbnails are optional. To add one, place a `thumbnail.jpg` next to the experiment and import it in `meta.ts`:
+Thumbnails are optional but every published experiment has one. To add one, place a `thumbnail.png` (the repo convention; `.jpg` also works) next to the experiment and import it in `meta.ts`:
 
 ```ts
 import type { ExperimentMeta } from '../types';
-import thumbnail from './thumbnail.jpg';
+import thumbnail from './thumbnail.png';
 
 const meta: ExperimentMeta = {
   title: 'My Experiment',
@@ -136,11 +140,11 @@ const meta: ExperimentMeta = {
 export default meta;
 ```
 
-Astro processes the imported image at build time (`ImageMetadata`). Without a thumbnail, the gallery card shows a deterministic dark placeholder color derived from the slug.
+Astro processes the imported image at build time (`ImageMetadata`). Use a 4:3 crop (cards are 4:3, `object-fit: cover`) around 640×480, under ~1 MB — the card serves the file as-is, unoptimized. Editors with an EXPORT PNG action can produce their own. Without a thumbnail, the gallery card shows a deterministic dark placeholder color derived from the slug.
 
 ### Notes
 
-`notes` shows an overlay panel in the bottom-left corner of the experiment with a title and a close button. Use it for instructions or controls. `mobileNotes` overrides the text on touch devices; if omitted, `notes` is shown on all devices.
+`notes` shows an overlay panel in the bottom-left corner of the experiment with a title and a close button. Use it for instructions or controls. `mobileNotes` overrides the text on touch devices; if omitted, `notes` is shown on all devices — so add `mobileNotes` whenever `notes` says "click", "hover", "scroll" or names keys. Keep notes to the essential gestures (2–3 sentences); the full control table belongs in the README. Notes must only describe controls that exist.
 
 ```ts
 const meta: ExperimentMeta = {
@@ -163,7 +167,7 @@ const meta: ExperimentMeta = {
 
 ## Tag filtering
 
-The sidebar lists all unique tags across experiments. Clicking a tag dims cards that don't match. Multiple tags use OR logic — a card is visible if it matches any active tag.
+The sidebar lists all unique tags across experiments, plus a Fuse.js search over title and tags. Clicking a tag hides cards that don't match. Multiple tags use OR logic — a card is visible if it matches any active tag.
 
 ## Environment variables
 
@@ -173,6 +177,66 @@ See `.env.example`. Copy to `.env` and fill in:
 GITHUB_URL=
 LINKEDIN_URL=
 ```
+
+## Best practices
+
+Distilled from the existing experiments. Reference implementations: **`torn-paper` / `xul-hills`** for editors (WebGL2 + SVG handles + panel + persistence + export), **`space`** for simulations (dt sub-stepping, presets, action buttons), **`fluid`** / **`orbits`** for CPU performance (preallocated typed arrays).
+
+### Concept
+
+- **One idea per experiment.** A clear question ("what does torn paper look like?", "N-body slingshot") beats a pile of features.
+- **Data over code.** Describe variants as tables (materials in `sand`, shapes in `cloth`, palettes in `xul-hills`) so adding one doesn't touch logic.
+- **Editors work in a fixed design space** (e.g. 1000×700, y up or down — pick one and document it). The stage is aspect-fitted into the available area, handles live in an SVG overlay with the same `viewBox`, and hit-testing happens in design units. Resize and DPR then never touch the model.
+
+### Render loop and time
+
+- **Simulations:** continuous `requestAnimationFrame` with real, clamped dt: `dt = Math.min((now - last) / 1000, 0.05)`. Integrate with dt (sub-step when stiff: `space` uses 8 Euler sub-steps). Per-frame constants (`vel *= 0.88`) make speed depend on refresh rate — 120 Hz screens run twice as fast.
+- **Static / editor pieces:** render on demand. Keep a dirty flag and request a single frame when something changes; only rebuild expensive intermediates (an SDF, a data texture) when their inputs changed.
+- **DPR:** always handle it, capped at 2: `Math.min(window.devicePixelRatio || 1, 2)`. Canvas2D: backing store `W*dpr`, `ctx.setTransform(dpr,0,0,dpr,0,0)`, physics in CSS px. Three.js: `renderer.setPixelRatio(...)`; scale `gl_PointSize` by the ratio. Exception: deliberately low-res grids upscaled by CSS (`fluid`, `sand` with `image-rendering: pixelated`).
+- **No allocation in hot loops.** Preallocate typed arrays and scratch buffers; no closures, `Object.assign` or `new Vector3` per element per frame. Cap anything users can spawn (`MAX_SHAPES`, `MAX_BODIES`) and make the cap match the buffers.
+- **Seeded randomness** (`mulberry32`) when a result should be reproducible or re-rollable (RETEAR / reseed).
+- **Resize keeps state** where possible (`sand` copies the overlapping grid) instead of resetting.
+- **Dispose what you rebuild.** Page navigation cleans up everything, but rebuilding inside the experiment (changing particle count, swapping renderers) must dispose geometries, materials, render targets / `GPUComputationRenderer`, cancel timers, and stop media tracks (`getUserMedia`) + close `AudioContext`.
+
+### Input
+
+- **Pointer Events only**: `pointerdown` on the drag surface, `setPointerCapture`, `pointermove` / `pointerup` / `pointercancel`, and `touch-action: none` on that surface. One code path for mouse, pen and touch; drags never get stuck when released outside.
+- Don't `preventDefault` touch events on `window` — it can swallow taps on the layout's nav and notes. Scope touch handling to the canvas.
+- **Every action button has a key, every key has a button** (or is listed in the README). The keydown handler ignores focused form controls:
+
+```ts
+window.addEventListener('keydown', (e) => {
+  const t = e.target as HTMLElement;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
+  // ...
+});
+```
+
+- Panels should not leak pointer events into the scene (`stopPropagation` on the panel when the canvas listens on `window`).
+- Conversions screen → scene must include camera zoom and offset (bug fixed in `space`).
+
+### UI
+
+- One panel style: the bare column described in **In-experiment UI controls** below (no background card). Parameters top-right, **action buttons always bottom-right** — not inside the parameter panel.
+- Booleans are checkboxes (`accent-color: white`), not 0–1 sliders.
+- Generate slider wiring from a table (`SLIDERS` in torn-paper, `STYLE_FMT` in xul-hills) instead of one handler per slider. For expensive params, update the label on `input` and rebuild on `change`.
+- Tints: red for destructive (CLEAR / DELETE), yellow for export or the special action, `.on` state for toggle buttons.
+- A scoped `<style is:global>` block with a short per-experiment prefix (`tp-`, `xh-`) is fine once inline styles get repetitive.
+- Panel subtitles describe what the controls do — not how to use the experiment (that's `notes`).
+- Show errors in the page, not only the console: WebGL2 unsupported, shader compile/link failure, failed fetch / image load, storage full, camera denied (`kaleidoscope` shows "NO CAM").
+
+**Editor layout** (torn-paper, xul-hills): fixed `#area` (`top:48px; left:24px; right:272px; bottom:72px`) containing an aspect-fitted stage (canvas + SVG overlay), 224px scrollable panel at 64/24, actions bottom-right. At `@media (max-width: 800px)` the panel becomes a bottom sheet (`max-height: 38vh`) and the area shrinks above it.
+
+**Mobile:** use `(pointer: coarse)` for *behaviour* (touch wording, bigger hit targets, sampling density) and width media queries for *layout*. Every panel needs a mobile answer: bottom sheet, hidden non-essential controls, or a camera shift.
+
+### Persistence and export
+
+- localStorage key `<slug>:<what>:v<N>` (e.g. `xul-hills:v4`); bump the version when the stored shape changes. Wrap every read/write in try/catch and fall back to defaults; validate what you load.
+- PNG export: render at a fixed larger size (or 2×), `canvas.toBlob` → object URL → `<a download>` → revoke after a delay. WebGL needs `preserveDrawingBuffer: true` (or render and read in the same task).
+
+### WebGL2 without Three.js
+
+Full-screen triangle (`[-1,-1, 3,-1, -1,3]`), shaders compiled with an error path that reaches the page, uniform locations cached. Pass per-column / per-item data as a float texture (`RGBA32F` + `NEAREST` + `texelFetch`; `RGBA16F` if you need linear filtering). `EXT_color_buffer_float` is required to render into float targets.
 
 ## Gotchas
 
@@ -227,7 +291,19 @@ function draw(t) {
 
 ### Mobile detection
 
-Use `window.matchMedia('(pointer: coarse)').matches` to detect touch devices — not `navigator.userAgent`. For zoom, detect portrait orientation with `window.innerHeight > window.innerWidth` and adjust the camera accordingly.
+Use `window.matchMedia('(pointer: coarse)').matches` to detect touch devices — not `navigator.userAgent`, and not screen size. For zoom, detect portrait orientation with `window.innerHeight > window.innerWidth` and adjust the camera accordingly. Panel *layout* is the exception: use a width media query (see **Editor layout**).
+
+### `pnpm dev` can serve stale markup
+
+After editing an experiment's HTML, the dev server sometimes hot-reloads the `<script>` but keeps serving the old markup. The new script then looks up elements that aren't there, throws on `null.addEventListener`, and the canvas stays blank. Restart `pnpm dev` before debugging a blank page, and don't let a missing optional control kill the experiment (`$(id)?.addEventListener`).
+
+### Esc is shared with the layout
+
+`ExperimentLayout` closes the README modal on Esc, so an experiment's own Esc binding fires at the same time. Fine for "deselect / cancel"; don't bind anything destructive to Esc.
+
+### Wrong-looking output in headless screenshots
+
+Headless Chrome defaults to SwiftShader, which compiles shaders that a real GPU may reject (and vice versa). Verify WebGL work with `--use-angle=metal` too.
 
 ### In-experiment UI controls (overlays)
 
@@ -366,7 +442,30 @@ To zoom out on mobile without changing the scene, set `camera.zoom = 0.5` and ca
 ## Dev
 
 ```bash
-pnpm dev
+pnpm dev       # http://localhost:4321
+pnpm build
+pnpm preview
 ```
 
 Requires Node >= 22.12.0 (Astro 6 constraint).
+
+## Verifying changes
+
+There are no tests or linters. A change is verified when:
+
+1. `pnpm build` passes.
+2. The page renders without console errors. Serve the build on a spare port (leave 4321 to the user's dev server) and screenshot it with headless Chrome, then look at the image:
+
+```bash
+pnpm preview --port 4391 &
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+  --use-angle=metal --enable-logging=stderr --v=0 --user-data-dir="$TMPDIR/chr" \
+  --window-size=1500,1000 --virtual-time-budget=6000 \
+  --screenshot="$TMPDIR/shot.png" http://localhost:4391/experiments/<slug>/ 2>&1 | grep CONSOLE
+```
+
+Add `--force-device-scale-factor=2` to check DPR handling, and `--window-size=390,844` for the mobile layout. Interaction (drag, touch, mic, camera) can't be checked this way — say so instead of claiming it works. Stop the preview server you started.
+
+## Git
+
+Conventional commits with the experiment slug as scope: `feat(torn-paper): add torn paper shader experiment`, `fix(dot-mesh,fractal): wire existing thumbnails in meta`. Plain messages — no `Co-Authored-By` or AI attribution trailers.
