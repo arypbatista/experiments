@@ -1,7 +1,7 @@
 ---
 ---
 
-<div id="container" style="position:fixed;inset:0;overflow:hidden;"></div>
+<div id="container" style="position:fixed;inset:0;overflow:hidden;touch-action:none;"></div>
 
 <!-- Renderer selector — top-right, clears back-button overlay -->
 <div style="position:fixed;top:64px;right:24px;font-family:monospace;font-size:11px;color:rgba(255,255,255,0.7);display:flex;flex-direction:column;gap:8px;min-width:180px;">
@@ -90,8 +90,8 @@
 
     base() {
       return {
-        x: (this.i * (this.W - 100)) / (this.cols - 1) + this.margin,
-        y: (this.j * (this.H - 100)) / (this.rows - 1) + this.margin,
+        x: (this.i * (this.W - 2 * this.margin)) / (this.cols - 1) + this.margin,
+        y: (this.j * (this.H - 2 * this.margin)) / (this.rows - 1) + this.margin,
       };
     }
 
@@ -154,12 +154,20 @@
   // ---------------------------------------------------------------
   let audioCtx: AudioContext | null = null;
   let analyser: AnalyserNode | null = null;
+  let micStream: MediaStream | null = null;
   let micEnabled = false;
+  let micPending = false;
+  let micGen = 0; // bumped by disableMic so a late getUserMedia result is discarded
+  let micBuf = new Uint8Array(0);
 
   async function enableMic() {
-    if (audioCtx) return;
+    if (audioCtx || micPending) return;
+    micPending = true;
+    const gen = micGen;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (gen !== micGen) { stream.getTracks().forEach(t => t.stop()); return; }
+      micStream = stream;
       audioCtx = new AudioContext();
       const src = audioCtx.createMediaStreamSource(stream);
       analyser = audioCtx.createAnalyser();
@@ -168,13 +176,28 @@
       micEnabled = true;
       (document.getElementById('mic-status') as HTMLElement).textContent = 'mic active';
     } catch {
-      (document.getElementById('mic-status') as HTMLElement).textContent = 'mic denied';
+      if (gen === micGen) (document.getElementById('mic-status') as HTMLElement).textContent = 'mic denied';
+    } finally {
+      micPending = false;
     }
+  }
+
+  // Release the microphone: stop tracks and close the AudioContext
+  function disableMic() {
+    micGen++;
+    micStream?.getTracks().forEach(t => t.stop());
+    micStream = null;
+    audioCtx?.close();
+    audioCtx = null;
+    analyser = null;
+    micEnabled = false;
+    (document.getElementById('mic-status') as HTMLElement).textContent = 'click canvas to enable mic';
   }
 
   function getMicLevel(): number {
     if (!analyser) return 0;
-    const buf = new Uint8Array(analyser.frequencyBinCount);
+    if (micBuf.length !== analyser.frequencyBinCount) micBuf = new Uint8Array(analyser.frequencyBinCount);
+    const buf = micBuf;
     analyser.getByteTimeDomainData(buf);
     let sum = 0;
     for (let i = 0; i < buf.length; i++) {
@@ -189,8 +212,14 @@
   // ---------------------------------------------------------------
   let mouseX = -9999;
   let mouseY = -9999;
-  window.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
-  window.addEventListener('mouseleave', () => { mouseX = -9999; mouseY = -9999; });
+  // Pointer events cover mouse, pen and touch (container has touch-action:none)
+  const setPointer = (e: PointerEvent) => { mouseX = e.clientX; mouseY = e.clientY; };
+  const clearPointer = () => { mouseX = -9999; mouseY = -9999; };
+  window.addEventListener('pointermove', setPointer);
+  window.addEventListener('pointerdown', setPointer);
+  window.addEventListener('pointerup', e => { if (e.pointerType !== 'mouse') clearPointer(); });
+  window.addEventListener('pointercancel', clearPointer);
+  document.documentElement.addEventListener('pointerleave', clearPointer);
 
   // ---------------------------------------------------------------
   // Renderer interface
@@ -272,7 +301,10 @@
       this.mesh = mesh; // canvas resize is handled inside p5.windowResized
     }
 
-    stop() { this.inst?.remove(); this.inst = null; }
+    stop() {
+      this.inst?.remove(); this.inst = null;
+      if (this.useMic) disableMic();
+    }
   }
 
   // ---------------------------------------------------------------
