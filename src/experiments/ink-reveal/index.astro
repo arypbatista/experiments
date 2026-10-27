@@ -1,0 +1,623 @@
+---
+---
+
+<canvas id="c" style="position:fixed;inset:0;display:block;background:#ecebe6;touch-action:none;"></canvas>
+
+<div
+  id="controls"
+  style="position:fixed;top:64px;right:24px;font-family:monospace;font-size:11px;color:rgba(0,0,0,0.7);display:flex;flex-direction:column;gap:8px;min-width:200px;"
+>
+  <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:2px;">
+    <span style="font-size:12px;color:rgba(0,0,0,0.9);letter-spacing:0.06em;">ROOT GROWTH</span>
+    <span style="font-size:10px;color:rgba(0,0,0,0.45);line-height:1.4;">how the root systems spread, branch and mature</span>
+  </div>
+  <select
+    id="preset-select"
+    style="background:#ecebe6;border:1px solid rgba(0,0,0,0.3);color:rgba(0,0,0,0.8);font-family:monospace;font-size:11px;padding:4px 6px;cursor:pointer;width:100%;"
+  >
+    <option value="roots" selected>Roots</option>
+    <option value="mycelium">Mycelium</option>
+    <option value="lightning">Lightning</option>
+    <option value="slow">Slow growth</option>
+    <option value="custom">Custom</option>
+  </select>
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span>placement</span>
+    <select
+      id="placement-select"
+      style="background:#ecebe6;border:1px solid rgba(0,0,0,0.3);color:rgba(0,0,0,0.8);font-family:monospace;font-size:11px;padding:4px 6px;cursor:pointer;width:100%;"
+    >
+      <option value="scattered">scattered</option>
+      <option value="bottom">bottom</option>
+      <option value="edges">edges</option>
+      <option value="center">center</option>
+    </select>
+  </label>
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="origins-label">origins: 6</span>
+    <input id="origins-range" type="range" min="1" max="24" step="1" value="6" style="accent-color:black;width:100%;" />
+  </label>
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="speed-label">speed: 2.4</span>
+    <input id="speed-range" type="range" min="0.3" max="10" step="0.1" value="2.4" style="accent-color:black;width:100%;" />
+  </label>
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="fork-label">branching: 0.035</span>
+    <input id="fork-range" type="range" min="0" max="0.15" step="0.005" value="0.035" style="accent-color:black;width:100%;" />
+  </label>
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="wander-label">wander: 0.40</span>
+    <input id="wander-range" type="range" min="0" max="1" step="0.01" value="0.4" style="accent-color:black;width:100%;" />
+  </label>
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="thicken-label">thin phase: 17</span>
+    <input id="thicken-range" type="range" min="3" max="60" step="1" value="17" style="accent-color:black;width:100%;" />
+  </label>
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="mature-label">maturation: 150</span>
+    <input id="mature-range" type="range" min="20" max="500" step="10" value="150" style="accent-color:black;width:100%;" />
+  </label>
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="maxTips-label">max tips: 80</span>
+    <input id="maxTips-range" type="range" min="10" max="240" step="5" value="80" style="accent-color:black;width:100%;" />
+  </label>
+</div>
+
+<div style="position:fixed;bottom:24px;right:24px;display:flex;gap:8px;">
+  <button
+    id="pause-btn"
+    style="background:transparent;border:1px solid rgba(0,0,0,0.4);color:rgba(0,0,0,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >PAUSE [SPACE]</button>
+  <button
+    id="restart-btn"
+    style="background:transparent;border:1px solid rgba(0,0,0,0.4);color:rgba(0,0,0,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >RESTART [R]</button>
+</div>
+
+<script>
+  import { loadInk, fullCanvas, fitRect, boxBlur, PAPER, PAPER_RGB, INK_RGB } from '../../lib/ink';
+
+  // ── Growth constants (see README.md) ────────────────────────────────────────
+  const T_TIP = 0.3;          // min ink a tip may walk on
+  const T_LOW = 0.02;         // min ink the thickening front may fill
+  const CLICK_TIPS = 4;       // tips sprouting from a click point
+  const HAIR_P = 0.012;       // chance per step to send a short probing lateral
+  const STALL_LIMIT = 14;     // steps a tip may probe before dying
+  const HUNGER_LIMIT = 22;    // steps a tip may cross revealed ink before dying
+  const SPROUT_AGE = 45;      // frames a root must age before it can sprout
+  const RING = 256;           // bucket ring size for the thickening queue
+
+  // ── Tunable parameters (panel) ──────────────────────────────────────────────
+  type Placement = 'scattered' | 'bottom' | 'edges' | 'center';
+  interface Params {
+    origins: number;     // simultaneous root systems
+    placement: Placement;
+    speed: number;       // mean tip px per frame
+    fork: number;        // chance per step to fork at a junction
+    wander: number;      // 0 straight .. 1 very curly
+    thicken: number;     // mean frames per px of lateral thickening (thin phase length)
+    mature: number;      // frames for a root path to darken to full ink
+    maxTips: number;     // cap on simultaneously growing tips
+  }
+  const PRESETS: Record<string, Params> = {
+    roots:     { origins: 6,  placement: 'scattered', speed: 2.4, fork: 0.035, wander: 0.4,  thicken: 17, mature: 150, maxTips: 80 },
+    mycelium:  { origins: 16, placement: 'scattered', speed: 3.2, fork: 0.09,  wander: 0.8,  thicken: 42, mature: 320, maxTips: 180 },
+    lightning: { origins: 5,  placement: 'edges',     speed: 7,   fork: 0.02,  wander: 0.05, thicken: 12, mature: 60,  maxTips: 48 },
+    slow:      { origins: 3,  placement: 'bottom',    speed: 0.8, fork: 0.03,  wander: 0.5,  thicken: 30, mature: 280, maxTips: 40 },
+  };
+  const P: Params = { ...PRESETS.roots };
+
+  interface Tip {
+    x: number; y: number; a: number;
+    speed: number; acc: number;
+    stall: number; pause: number;
+    hunger: number;         // steps walked over already-revealed ink
+    life: number;           // remaining steps (Infinity for main roots)
+    wph: number;            // wander phase
+  }
+
+  async function main() {
+    const canvas = document.getElementById('c') as HTMLCanvasElement;
+    const { w, h, ink } = await loadInk();
+    const N = w * h;
+    const S = boxBlur(ink, w, h, 1);
+
+    // Chamfer distance to paper (stroke half-width) inside the ink mask
+    const D = new Float32Array(N);
+    for (let i = 0; i < N; i++) D[i] = ink[i] > T_TIP ? 1e6 : 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x; if (!D[i]) continue;
+      let d = D[i];
+      if (x > 0) d = Math.min(d, D[i - 1] + 1);
+      if (y > 0) {
+        d = Math.min(d, D[i - w] + 1);
+        if (x > 0) d = Math.min(d, D[i - w - 1] + 1.414);
+        if (x < w - 1) d = Math.min(d, D[i - w + 1] + 1.414);
+      } else d = Math.min(d, 1);
+      D[i] = d;
+    }
+    for (let y = h - 1; y >= 0; y--) for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x; if (!D[i]) continue;
+      let d = D[i];
+      if (x < w - 1) d = Math.min(d, D[i + 1] + 1);
+      if (y < h - 1) {
+        d = Math.min(d, D[i + w] + 1);
+        if (x < w - 1) d = Math.min(d, D[i + w + 1] + 1.414);
+        if (x > 0) d = Math.min(d, D[i + w - 1] + 1.414);
+      } else d = Math.min(d, 1);
+      D[i] = d;
+    }
+
+    // Walkable ink pixels, shuffled per run, used to find unreached ink
+    const walk: number[] = [];
+    for (let i = 0; i < N; i++) if (ink[i] > T_TIP) walk.push(i);
+
+    // ── State ────────────────────────────────────────────────────────────────
+    const off = document.createElement('canvas');
+    off.width = w; off.height = h;
+    const offCtx = off.getContext('2d')!;
+    const image = offCtx.createImageData(w, h);
+    const px = image.data;
+
+    const rev = new Uint8Array(N);       // 0 unrevealed, 1 root path, 2 thickened
+    const sched = new Uint8Array(N);     // queued for thickening
+    const born = new Float32Array(N);    // frame of reveal
+    const active = new Int32Array(N);    // pixels still darkening
+    let nActive = 0;
+    const roots = new Int32Array(N);     // root-path pixels (sprout sources)
+    let nRoots = 0;
+    let buckets: number[][] = [];
+    let pending = 0;
+    let tips: Tip[] = [];
+    let frameNo = 0;
+    let walkCursor = 0;
+    let finished = false;
+    let idle = 0;
+
+    const at = (x: number, y: number) => {
+      const xi = x | 0, yi = y | 0;
+      return xi < 0 || yi < 0 || xi >= w || yi >= h ? -1 : yi * w + xi;
+    };
+
+    function paint(i: number, m: number) {
+      const t = ink[i] * m, p = i * 4;
+      px[p] = PAPER_RGB[0] + (INK_RGB[0] - PAPER_RGB[0]) * t;
+      px[p + 1] = PAPER_RGB[1] + (INK_RGB[1] - PAPER_RGB[1]) * t;
+      px[p + 2] = PAPER_RGB[2] + (INK_RGB[2] - PAPER_RGB[2]) * t;
+    }
+
+    function schedule(i: number, delay: number) {
+      if (sched[i] || rev[i] || ink[i] <= T_LOW) return;
+      sched[i] = 1;
+      buckets[(frameNo + Math.max(1, Math.round(delay))) % RING].push(i);
+      pending++;
+    }
+
+    function scheduleNeighbors(i: number) {
+      const x = i % w, y = (i / w) | 0;
+      // slower thickening at the edge of a stroke: tendrils first, flesh later
+      const d = P.thicken * (0.5 + Math.random());
+      if (x > 0) schedule(i - 1, d * (0.8 + Math.random() * 0.6));
+      if (x < w - 1) schedule(i + 1, d * (0.8 + Math.random() * 0.6));
+      if (y > 0) schedule(i - w, d * (0.8 + Math.random() * 0.6));
+      if (y < h - 1) schedule(i + w, d * (0.8 + Math.random() * 0.6));
+    }
+
+    function reveal(i: number, kind: 1 | 2) {
+      if (rev[i]) return;
+      rev[i] = kind;
+      born[i] = frameNo;
+      active[nActive++] = i;
+      if (kind === 1) roots[nRoots++] = i;
+      scheduleNeighbors(i);
+    }
+
+    function addTip(x: number, y: number, a: number, life = Infinity) {
+      if (tips.length >= P.maxTips) return;
+      tips.push({
+        x, y, a, life,
+        speed: P.speed * (0.6 + Math.random() * 0.7),
+        acc: 0, stall: 0, pause: 0, hunger: 0,
+        wph: Math.random() * 100,
+      });
+    }
+
+    // Score a heading: walkable, unexplored ink ahead, a pull toward the
+    // centre of the stroke (distance field), and a cost for turning.
+    function score(t: Tip, th: number): number {
+      const c = Math.cos(th), s = Math.sin(th);
+      let sc = 0;
+      for (let k = 1; k <= 3; k++) {
+        const L = k * 1.8;
+        const p = at(t.x + c * L, t.y + s * L);
+        if (p < 0 || ink[p] < T_TIP) return k === 1 ? -1 : sc * 0.6;
+        sc += S[p] * (rev[p] ? 0.25 : 1) + Math.min(D[p], 6) * 0.03;
+      }
+      return sc / 3;
+    }
+
+    const angDiff = (a: number, b: number) => {
+      let d = a - b;
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      return d;
+    };
+
+    // One 1-px step. Returns false when the tip dies.
+    function stepTip(t: Tip): boolean {
+      if (t.life-- <= 0) return false;
+      const spread = t.stall > 0 ? 0.55 + t.stall * 0.12 : 0.38; // probe wider when stuck
+      let best = -2, bestA = t.a, second = -2, secondA = t.a;
+      for (let k = -3; k <= 3; k++) {
+        const th = t.a + k * spread + (Math.random() - 0.5) * 0.5 * P.wander;
+        const sc = score(t, th) - Math.abs(k) * 0.035 + Math.random() * 0.05;
+        if (sc > best) { second = best; secondA = bestA; best = sc; bestA = th; }
+        else if (sc > second) { second = sc; secondA = th; }
+      }
+      if (best < 0.28) {
+        // hesitate and probe; die after too long without fresh ink
+        t.stall++;
+        t.a += (Math.random() - 0.5) * 0.8;
+        if (best < 0 || t.stall > STALL_LIMIT) return false;
+        t.speed *= 0.9;
+      } else {
+        t.speed += (P.speed * (0.6 + Math.random() * 0.7) - t.speed) * 0.02;
+      }
+      // momentum: turn partway toward the best heading, plus slow wander
+      t.wph += 0.08;
+      t.a += angDiff(bestA, t.a) * (0.6 - 0.375 * P.wander) + Math.sin(t.wph * 1.7) * Math.cos(t.wph * 0.6) * 0.15 * P.wander;
+      const nx = t.x + Math.cos(t.a), ny = t.y + Math.sin(t.a);
+      const p = at(nx, ny);
+      if (p < 0 || ink[p] < T_TIP) { t.stall++; return t.stall <= STALL_LIMIT; }
+      t.x = nx; t.y = ny;
+      if (rev[p]) {
+        // crossing explored ground; starve if it never finds fresh ink
+        if (++t.hunger > HUNGER_LIMIT) return false;
+      } else { t.hunger = 0; t.stall = 0; }
+      reveal(p, 1);
+
+      // fork at junctions: a second good, distinct, unexplored direction
+      if (
+        second > 0.55 && Math.abs(angDiff(secondA, bestA)) > 0.6 &&
+        Math.random() < P.fork && t.life === Infinity
+      ) addTip(t.x, t.y, secondA);
+      // occasional short probing lateral (root hair) into the surrounding ink
+      if (Math.random() < HAIR_P * Math.min(1, D[p] / 3)) {
+        addTip(t.x, t.y, t.a + (Math.random() < 0.5 ? -1 : 1) * (0.9 + Math.random() * 0.6), 8 + Math.random() * 30);
+      }
+      return true;
+    }
+
+    // Look for unexplored ink in some direction from (x,y)
+    function openDir(x: number, y: number): number | null {
+      const off0 = Math.random() * Math.PI * 2;
+      for (let k = 0; k < 12; k++) {
+        const th = off0 + (k / 12) * Math.PI * 2;
+        let ok = true;
+        for (let L = 3; L <= 9; L += 3) {
+          const p = at(x + Math.cos(th) * L, y + Math.sin(th) * L);
+          if (p < 0 || ink[p] < T_TIP || rev[p]) { ok = false; break; }
+        }
+        if (ok) return th;
+      }
+      return null;
+    }
+
+    // New tips sprout from mature root paths toward unrevealed ink
+    function sprout() {
+      let need = Math.round(P.maxTips * 0.375) - tips.length;
+      if (need <= 0 || !nRoots) return;
+      const want = need;
+      need = Math.min(need, 2); // at most two laterals per frame
+      for (let tries = 0; tries < 40 && need > 0; tries++) {
+        const i = roots[(Math.random() * nRoots) | 0];
+        if (frameNo - born[i] < SPROUT_AGE) continue;
+        const x = (i % w) + 0.5, y = ((i / w) | 0) + 0.5;
+        const th = openDir(x, y);
+        if (th === null) continue;
+        addTip(x, y, th);
+        need--;
+      }
+      if (tips.length > 3) return;
+      need = Math.min(want, 8);
+      // fallback when growth stalls: find unreached ink, sprout from the nearest
+      // revealed pixel; with nothing growing at all, seed an isolated island
+      let checks = 0;
+      while (walkCursor < walk.length && checks < 40 && need > 0) {
+        const i = walk[walkCursor];
+        if (rev[i]) { walkCursor++; continue; }
+        checks++;
+        const x = i % w, y = (i / w) | 0;
+        let found = -1;
+        for (let r = 2; r <= 12 && found < 0; r += 2) {
+          for (let k = 0; k < 16 && found < 0; k++) {
+            const th = (k / 16) * Math.PI * 2;
+            const q = at(x + Math.cos(th) * r, y + Math.sin(th) * r);
+            if (q >= 0 && rev[q]) found = q;
+          }
+        }
+        if (found >= 0) {
+          const fx = found % w, fy = (found / w) | 0;
+          addTip(x + 0.5, y + 0.5, Math.atan2(y - fy, x - fx));
+          need--;
+          walkCursor++;
+        } else if (tips.length === 0) {
+          addTip(x + 0.5, y + 0.5, Math.random() * Math.PI * 2);
+          need--;
+          walkCursor++;
+        } else {
+          // retry later: swap to a random later slot
+          const j = walkCursor + 1 + ((Math.random() * (walk.length - walkCursor - 1)) | 0);
+          if (j < walk.length) { walk[walkCursor] = walk[j]; walk[j] = i; }
+          else walkCursor++;
+        }
+      }
+    }
+
+    function updateDilation() {
+      const b = buckets[frameNo % RING];
+      buckets[frameNo % RING] = [];
+      for (let k = 0; k < b.length; k++) {
+        const i = b[k];
+        pending--;
+        sched[i] = 0;
+        if (!rev[i]) reveal(i, 2);
+      }
+    }
+
+    function updateMaturity() {
+      let n = 0;
+      for (let k = 0; k < nActive; k++) {
+        const i = active[k];
+        const age = frameNo - born[i];
+        let m: number;
+        if (rev[i] === 1) {
+          const u = Math.min(1, age / P.mature);
+          m = 0.5 + 0.5 * u * u * (3 - 2 * u);
+        } else {
+          const u = Math.min(1, age / (P.mature / 3));
+          m = u * u * (3 - 2 * u);
+        }
+        paint(i, m);
+        if (m < 1) active[n++] = i;
+      }
+      nActive = n;
+    }
+
+    function finish() {
+      // Anything never reached (faint specks, unreachable islands) fades in
+      for (let i = 0; i < N; i++) {
+        if (!rev[i] && ink[i] > 0) { rev[i] = 2; born[i] = frameNo; active[nActive++] = i; }
+      }
+      tips = [];
+      finished = true;
+    }
+
+    // Thick ink nearest to an image-space point (or -1)
+    function nearestInk(ox: number, oy: number): number {
+      let bi = -1, bd = Infinity;
+      const R = 60;
+      for (let dy = -R; dy <= R; dy += 1) for (let dx = -R; dx <= R; dx += 1) {
+        const p = at(ox + dx, oy + dy);
+        if (p < 0 || D[p] < 1.5) continue;
+        const dd = dx * dx + dy * dy;
+        if (dd < bd) { bd = dd; bi = p; }
+      }
+      return bi;
+    }
+
+    // One root system: a few tips leaving the origin in different directions
+    function plantOrigin(p: number, n: number, up = false) {
+      const x = (p % w) + 0.5, y = ((p / w) | 0) + 0.5;
+      const a0 = up ? -Math.PI / 2 + (Math.random() - 0.5) * 0.8 : Math.random() * Math.PI * 2;
+      for (let k = 0; k < n; k++) {
+        const a = up ? a0 + (k - (n - 1) / 2) * 0.7 : a0 + (k / n) * Math.PI * 2;
+        tips.push({
+          x, y, a, life: Infinity,
+          speed: P.speed * (0.6 + Math.random() * 0.7),
+          acc: 0, stall: 0, pause: 0, hunger: 0, wph: Math.random() * 100,
+        });
+      }
+    }
+
+    // Candidate origins: thick ink inside the region chosen by placement
+    function originCandidates(pl: Placement): number[] {
+      const out: number[] = [];
+      const cx = w / 2, cy = h / 2;
+      for (let y = 2; y < h - 2; y += 2) for (let x = 2; x < w - 2; x += 2) {
+        const p = y * w + x;
+        if (D[p] < 2.5) continue;
+        const ex = (x - cx) / (w * 0.5), ey = (y - cy) / (h * 0.5);
+        const r2 = ex * ex + ey * ey;
+        if (pl === 'bottom' && y < h * 0.8) continue;
+        if (pl === 'center' && r2 > 0.12) continue;
+        if (pl === 'edges' && r2 < 0.55) continue;
+        out.push(p);
+      }
+      return out;
+    }
+
+    // Farthest-point sampling: thick-ink spots kept apart from each other
+    function pickOrigins(n: number, pl: Placement, fixed: number[] = []): number[] {
+      const cands = originCandidates(pl);
+      const chosen = [...fixed];
+      const picked: number[] = [];
+      if (!cands.length) return picked;
+      if (!chosen.length) {
+        const p = cands[(Math.random() * cands.length) | 0];
+        chosen.push(p); picked.push(p);
+      }
+      while (picked.length < n) {
+        let bp = -1, bd = -1;
+        for (let k = 0; k < 200; k++) {
+          const p = cands[(Math.random() * cands.length) | 0];
+          let md = Infinity;
+          for (const c of chosen) {
+            const dx = (p % w) - (c % w), dy = ((p / w) | 0) - ((c / w) | 0);
+            md = Math.min(md, dx * dx + dy * dy);
+          }
+          const sc = Math.sqrt(md) * (0.85 + Math.random() * 0.3) + (pl === 'bottom' ? ((p / w) | 0) * 0.5 : 0);
+          if (sc > bd) { bd = sc; bp = p; }
+        }
+        chosen.push(bp); picked.push(bp);
+      }
+      return picked;
+    }
+
+    // Restart with P.origins root systems; an optional click point is one of them
+    function restart(origin?: { x: number; y: number }) {
+      rev.fill(0); sched.fill(0);
+      nActive = 0; nRoots = 0; pending = 0; frameNo = 0; idle = 0;
+      buckets = Array.from({ length: RING }, () => []);
+      tips = [];
+      finished = false;
+      for (let i = walk.length - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0;
+        [walk[i], walk[j]] = [walk[j], walk[i]];
+      }
+      walkCursor = 0;
+      for (let i = 0; i < N; i++) {
+        px[i * 4] = PAPER_RGB[0]; px[i * 4 + 1] = PAPER_RGB[1];
+        px[i * 4 + 2] = PAPER_RGB[2]; px[i * 4 + 3] = 255;
+      }
+      const fixed: number[] = [];
+      if (origin) {
+        const p = nearestInk(origin.x, origin.y);
+        if (p >= 0) { fixed.push(p); plantOrigin(p, CLICK_TIPS); }
+      }
+      const n = Math.max(0, P.origins - fixed.length);
+      const per = P.placement === 'bottom' ? 1 : 2;
+      for (const p of pickOrigins(n, P.placement, fixed)) plantOrigin(p, per, P.placement === 'bottom');
+    }
+
+    // Click during growth: one more root system joins the running growth
+    function addOrigin(ox: number, oy: number) {
+      if (finished) { restart({ x: ox, y: oy }); return; }
+      const p = nearestInk(ox, oy);
+      if (p >= 0) plantOrigin(p, CLICK_TIPS);
+    }
+
+    function step() {
+      frameNo++;
+      updateDilation();
+      if (!finished) {
+        const alive: Tip[] = [];
+        for (const t of tips) {
+          if (t.pause > 0) { t.pause--; alive.push(t); continue; }
+          // tips hesitate now and then before pushing on
+          if (Math.random() < 0.006) { t.pause = 8 + Math.random() * 30; alive.push(t); continue; }
+          t.acc += t.speed;
+          let ok = true;
+          while (t.acc >= 1 && ok) { t.acc -= 1; ok = stepTip(t); }
+          if (ok) alive.push(t);
+        }
+        // (children pushed during the loop were visited by for-of too)
+        tips = alive;
+        sprout();
+        if (!tips.length && walkCursor >= walk.length) {
+          idle++;
+          if (pending === 0 || idle > 600) finish();
+        }
+      }
+      updateMaturity();
+    }
+
+    let W = 0, H = 0;
+    const ctx = fullCanvas(canvas, (nw, nh) => { W = nw; H = nh; });
+    let paused = false;
+    // keep the drawing clear of the parameter panel when there is room
+    const layout = () => {
+      const panel = document.getElementById('controls')!;
+      const side = panel.style.display !== 'none' && W > 640 ? 248 : 0;
+      return fitRect(w, h, W - side, H);
+    };
+
+    // ── Controls ─────────────────────────────────────────────────────────────
+    const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+    const presetSelect = $<HTMLSelectElement>('preset-select');
+    const placementSelect = $<HTMLSelectElement>('placement-select');
+    type NumKey = Exclude<keyof Params, 'placement'>;
+    const SLIDERS: { key: NumKey; label: string; digits: number; restart: boolean }[] = [
+      { key: 'origins', label: 'origins', digits: 0, restart: true },
+      { key: 'speed', label: 'speed', digits: 1, restart: false },
+      { key: 'fork', label: 'branching', digits: 3, restart: false },
+      { key: 'wander', label: 'wander', digits: 2, restart: false },
+      { key: 'thicken', label: 'thin phase', digits: 0, restart: false },
+      { key: 'mature', label: 'maturation', digits: 0, restart: false },
+      { key: 'maxTips', label: 'max tips', digits: 0, restart: false },
+    ];
+    const setLabel = (sl: (typeof SLIDERS)[number]) => {
+      $(sl.key + '-label').textContent = `${sl.label}: ${P[sl.key].toFixed(sl.digits)}`;
+    };
+    function applyValues(v: Params) {
+      Object.assign(P, v);
+      placementSelect.value = P.placement;
+      for (const sl of SLIDERS) {
+        $<HTMLInputElement>(sl.key + '-range').value = String(P[sl.key]);
+        setLabel(sl);
+      }
+    }
+    for (const sl of SLIDERS) {
+      const input = $<HTMLInputElement>(sl.key + '-range');
+      input.addEventListener('input', () => {
+        P[sl.key] = parseFloat(input.value);
+        setLabel(sl);
+        presetSelect.value = 'custom';
+      });
+      // origins only take effect on a fresh start
+      if (sl.restart) input.addEventListener('change', () => restart());
+    }
+    placementSelect.addEventListener('change', () => {
+      P.placement = placementSelect.value as Placement;
+      presetSelect.value = 'custom';
+      restart();
+    });
+    presetSelect.addEventListener('change', () => {
+      const preset = PRESETS[presetSelect.value];
+      if (preset) { applyValues(preset); restart(); }
+    });
+    if (window.matchMedia('(pointer: coarse)').matches) $('controls').style.display = 'none';
+
+    const pauseBtn = $('pause-btn');
+    const togglePause = () => {
+      paused = !paused;
+      pauseBtn.textContent = paused ? 'PLAY [SPACE]' : 'PAUSE [SPACE]';
+    };
+    $('restart-btn').addEventListener('click', () => restart());
+    pauseBtn.addEventListener('click', togglePause);
+    window.addEventListener('keydown', (e) => {
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'SELECT') return;
+      if (e.key === 'r' || e.key === 'R') restart();
+      else if (e.key === ' ') { e.preventDefault(); togglePause(); }
+    });
+
+    applyValues(P);
+    restart();
+    canvas.addEventListener('pointerdown', (e) => {
+      const r = layout();
+      addOrigin((e.clientX - r.x) / r.s, (e.clientY - r.y) / r.s);
+    });
+
+    function frame() {
+      if (!paused) step();
+      // once fully grown and matured the bitmap is static
+      if (!finished || nActive) offCtx.putImageData(image, 0, 0);
+      const r = layout();
+      ctx.fillStyle = PAPER;
+      ctx.fillRect(0, 0, W, H);
+      ctx.drawImage(off, r.x, r.y, r.w, r.h);
+      // growing tips: a faint dark bud at each head
+      ctx.fillStyle = 'rgba(20,19,18,0.55)';
+      for (const t of tips) {
+        ctx.beginPath();
+        ctx.arc(r.x + t.x * r.s, r.y + t.y * r.s, Math.max(1, r.s * 1.1), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      requestAnimationFrame(frame);
+    }
+    frame();
+  }
+
+  main();
+</script>
