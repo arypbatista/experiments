@@ -1,0 +1,637 @@
+---
+---
+
+<canvas id="c" style="position:fixed;inset:0;display:block;background:#ecebe6;touch-action:none;"></canvas>
+
+<div
+  id="controls"
+  style="position:fixed;top:64px;right:24px;font-family:monospace;font-size:11px;color:rgba(20,19,18,0.75);display:flex;flex-direction:column;gap:8px;width:220px;"
+>
+  <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:2px;">
+    <span style="font-size:12px;color:rgba(20,19,18,0.95);letter-spacing:0.06em;">THREAD MODE</span>
+    <span id="mode-desc" style="font-size:10px;color:rgba(20,19,18,0.5);line-height:1.4;">the drawing is ~1000 physical threads. pick what they are.</span>
+  </div>
+  <select
+    id="mode-select"
+    style="background:#ecebe6;border:1px solid rgba(20,19,18,0.35);color:rgba(20,19,18,0.85);font-family:monospace;font-size:11px;padding:4px 6px;cursor:pointer;width:100%;"
+  >
+    <option value="harp">1 · harp: pluck</option>
+    <option value="cut">2 · scissors: snip</option>
+    <option value="yarn">3 · yarn: unravel</option>
+    <option value="wind">4 · hair: wind</option>
+  </select>
+  <span id="mode-hint" style="font-size:10px;color:rgba(20,19,18,0.6);line-height:1.5;"></span>
+  <span id="mode-stat" style="font-size:10px;color:rgba(180,50,30,0.85);letter-spacing:0.04em;"></span>
+</div>
+
+<div style="position:fixed;bottom:24px;right:24px;display:flex;gap:8px;">
+  <button
+    id="gust-btn"
+    style="display:none;background:transparent;border:1px solid rgba(180,50,30,0.55);color:rgba(180,50,30,0.85);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >GUST [G]</button>
+  <button
+    id="sound-btn"
+    style="background:transparent;border:1px solid rgba(20,19,18,0.4);color:rgba(20,19,18,0.75);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >SOUND ON [M]</button>
+  <button
+    id="weave-btn"
+    style="background:transparent;border:1px solid rgba(20,19,18,0.4);color:rgba(20,19,18,0.75);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >REWEAVE [R]</button>
+</div>
+
+<script>
+  import { loadInk, fullCanvas, fitRect, PAPER } from '../../lib/ink';
+  import { traceThreads, SEG } from './trace';
+  import { ThreadAudio } from './audio';
+
+  type Mode = 'harp' | 'cut' | 'yarn' | 'wind';
+  const MODES: Mode[] = ['harp', 'cut', 'yarn', 'wind'];
+  const HINTS: Record<Mode, string> = {
+    harp: 'drag across the threads to strum them. long threads ring low, short ones high.',
+    cut: 'swipe to snip threads. the cut pieces drop and pile up on the floor.',
+    yarn: 'grab any thread and pull. it is all one yarn, so the drawing unravels as you go.',
+    wind: 'move to stir the air, hold to blow. each stroke is a hair rooted at its top.',
+  };
+
+  const GHOST = 0.09;      // opacity of the original drawing underneath
+  const GRAVITY = 0.22;    // for released points, drawing px / frame²
+  const BREAK = 5;         // yarn: displacement that rips a point out of the drawing
+  const ACCENT = 'rgba(180,50,30,0.9)';
+  const SCALE = [0, 3, 5, 7, 10]; // minor pentatonic
+  const BASE_FREQ = 82.4;  // E2
+
+  async function main() {
+    const canvas = document.getElementById('c') as HTMLCanvasElement;
+    const { w, h, ink, img } = await loadInk();
+    const traced = traceThreads(ink, w, h);
+
+    // ---- flatten into one long chain of points (tour order) --------------------
+    // Gaps between consecutive threads are bridged by invisible "link" points so the
+    // yarn mode can treat the whole drawing as a single string.
+    const xs: number[] = [], ys: number[] = [], link: number[] = [], kind: number[] = [], owner: number[] = [];
+    const T = traced.length;
+    const tStart = new Int32Array(T), tLen = new Int32Array(T), tWidth = new Float32Array(T);
+    traced.forEach((t, ti) => {
+      if (ti > 0) {
+        const px = xs[xs.length - 1], py = ys[ys.length - 1];
+        const gx = t.pts[0] - px, gy = t.pts[1] - py;
+        const steps = Math.floor(Math.hypot(gx, gy) / SEG);
+        for (let k = 1; k < steps; k++) {
+          kind[xs.length - 1] = 1;
+          xs.push(px + (gx * k) / steps); ys.push(py + (gy * k) / steps); link.push(1); owner.push(-1);
+        }
+        kind[xs.length - 1] = 1;
+      }
+      tStart[ti] = xs.length;
+      tLen[ti] = t.pts.length / 2;
+      tWidth[ti] = t.width;
+      for (let i = 0; i < t.pts.length; i += 2) {
+        if (i > 0) kind[xs.length - 1] = 0;
+        xs.push(t.pts[i]); ys.push(t.pts[i + 1]); link.push(0); owner.push(ti);
+      }
+    });
+    const N = xs.length;
+    const X = new Float32Array(xs), Y = new Float32Array(ys);
+    const PX = new Float32Array(xs), PY = new Float32Array(ys);
+    const RX = new Float32Array(xs), RY = new Float32Array(ys);
+    const isLink = new Uint8Array(link);
+    const own = new Int32Array(owner);
+    const segKind = new Uint8Array(N); // 0 in-thread, 1 link; segment i joins i and i+1
+    for (let i = 0; i < N - 1; i++) segKind[i] = kind[i] ?? 0;
+    const rest = new Float32Array(N);
+    for (let i = 0; i < N - 1; i++) rest[i] = Math.hypot(X[i + 1] - X[i], Y[i + 1] - Y[i]);
+    const broken = new Uint8Array(N);
+    const free = new Uint8Array(N);
+    const K = new Float32Array(N);       // anchor stiffness for the current mode
+    const pileU = new Float32Array(N);   // where in the pile this point settles
+    for (let i = 0; i < N; i++) pileU[i] = Math.random();
+
+    // per-thread data
+    const tLenPx = new Float32Array(T), tFreq = new Float32Array(T), tAmp = new Float32Array(T), tPhase = new Float32Array(T);
+    const tRet = new Float32Array(T).fill(-1); // reweave start time, -1 = not returning
+    const tLast = new Float32Array(T);
+    const bx0 = new Float32Array(T), by0 = new Float32Array(T), bx1 = new Float32Array(T), by1 = new Float32Array(T);
+    let minL = Infinity, maxL = 0;
+    for (let t = 0; t < T; t++) {
+      tLenPx[t] = (tLen[t] - 1) * SEG;
+      minL = Math.min(minL, tLenPx[t]); maxL = Math.max(maxL, tLenPx[t]);
+      let ax = Infinity, ay = Infinity, cx = -Infinity, cy = -Infinity;
+      for (let i = tStart[t]; i < tStart[t] + tLen[t]; i++) {
+        ax = Math.min(ax, X[i]); ay = Math.min(ay, Y[i]); cx = Math.max(cx, X[i]); cy = Math.max(cy, Y[i]);
+      }
+      bx0[t] = ax; by0[t] = ay; bx1[t] = cx; by1[t] = cy;
+    }
+    for (let t = 0; t < T; t++) {
+      // long threads ring low, thick threads drop an octave
+      const ln = Math.log(tLenPx[t] / minL) / Math.log(maxL / minL);
+      const deg = Math.round((1 - ln) * 15);
+      let semi = 12 * Math.floor(deg / 5) + SCALE[deg % 5];
+      if (tWidth[t] > 4) semi -= 12;
+      tFreq[t] = BASE_FREQ * Math.pow(2, (semi + 12) / 12);
+    }
+    // hair roots: the higher end of each thread
+    const rootAtStart = new Uint8Array(T);
+    for (let t = 0; t < T; t++) rootAtStart[t] = Y[tStart[t]] <= Y[tStart[t] + tLen[t] - 1] ? 1 : 0;
+
+    // width buckets for batched stroking
+    const bucketOf = new Int32Array(T);
+    const NB = 16;
+    for (let t = 0; t < T; t++) bucketOf[t] = Math.min(NB - 1, Math.round(tWidth[t] * 2) - 1);
+    const buckets: number[][] = Array.from({ length: NB }, () => []);
+    for (let t = 0; t < T; t++) buckets[bucketOf[t]].push(t);
+
+    // ---- view ------------------------------------------------------------------
+    let W = 0, H = 0;
+    const ctx = fullCanvas(canvas, (nw, nh) => { W = nw; H = nh; });
+    // keep the drawing clear of the top-right panel on wide screens
+    const view = () => {
+      const side = W >= 760 ? 250 : 0;
+      const r = fitRect(w, h, W - side, H, 0.84);
+      return r;
+    };
+    const bounds = () => {
+      const r = view();
+      return { l: -r.x / r.s, r: (W - r.x) / r.s, b: (H - r.y) / r.s - 6, t: -r.y / r.s };
+    };
+
+    // ---- audio -------------------------------------------------------------------
+    const audio = new ThreadAudio();
+    const soundBtn = document.getElementById('sound-btn')!;
+    function toggleSound() {
+      audio.setMuted(!audio.muted);
+      soundBtn.textContent = audio.muted ? 'SOUND OFF [M]' : 'SOUND ON [M]';
+    }
+    soundBtn.addEventListener('click', toggleSound);
+
+    // ---- modes -------------------------------------------------------------------
+    let mode: Mode = 'harp';
+    const select = document.getElementById('mode-select') as HTMLSelectElement;
+    const hint = document.getElementById('mode-hint')!;
+    const stat = document.getElementById('mode-stat')!;
+    const gustBtn = document.getElementById('gust-btn') as HTMLElement;
+
+    function configure() {
+      for (let t = 0; t < T; t++) {
+        const s = tStart[t], n = tLen[t];
+        for (let j = 0; j < n; j++) {
+          const i = s + j;
+          if (mode === 'wind') {
+            const d = (rootAtStart[t] ? j : n - 1 - j) / Math.max(1, n - 1);
+            K[i] = d === 0 ? 1 : 0.05 * (1 - d) * (1 - d) + 0.006;
+          } else if (mode === 'harp') K[i] = 1;
+          else if (mode === 'cut') K[i] = 0.08;
+          else K[i] = 0.35;
+        }
+      }
+      for (let i = 0; i < N; i++) if (isLink[i]) K[i] = mode === 'yarn' ? 0.35 : 1;
+    }
+
+    function reweave(stagger = 1.4) {
+      const now = performance.now() / 1000;
+      const b = bounds();
+      for (let t = 0; t < T; t++) {
+        // fallen threads come back bottom-up, the rest settle at once
+        let anyFree = false;
+        for (let i = tStart[t]; i < tStart[t] + tLen[t]; i++) if (free[i]) { anyFree = true; break; }
+        const depth = Math.max(0, Math.min(1, (b.b - Y[tStart[t]]) / (b.b - b.t)));
+        tRet[t] = now + (anyFree ? depth * stagger + Math.random() * 0.25 : 0);
+      }
+      // link points just go home
+      for (let i = 0; i < N; i++) if (isLink[i]) { free[i] = 0; X[i] = PX[i] = RX[i]; Y[i] = PY[i] = RY[i]; }
+      grabbed = -1;
+    }
+
+    function setMode(m: Mode) {
+      mode = m;
+      select.value = m;
+      hint.textContent = HINTS[m];
+      gustBtn.style.display = m === 'wind' ? 'block' : 'none';
+      configure();
+      reweave(0.9);
+      wvx.fill(0); wvy.fill(0);
+    }
+    select.addEventListener('change', () => setMode(select.value as Mode));
+    document.getElementById('weave-btn')!.addEventListener('click', () => reweave());
+
+    // ---- wind field (coarse grid in drawing space) --------------------------------
+    const CS = 16, GX0 = -260, GY0 = -200;
+    const GW = Math.ceil((w + 520) / CS), GH = Math.ceil((h + 400) / CS);
+    let wvx = new Float32Array(GW * GH), wvy = new Float32Array(GW * GH);
+    let tvx = new Float32Array(GW * GH), tvy = new Float32Array(GW * GH);
+    let gust = -1;
+    function inject(x: number, y: number, vx: number, vy: number, radius: number) {
+      const cx = (x - GX0) / CS, cy = (y - GY0) / CS, rc = radius / CS;
+      for (let gy = Math.max(0, Math.floor(cy - rc)); gy <= Math.min(GH - 1, Math.ceil(cy + rc)); gy++) {
+        for (let gx = Math.max(0, Math.floor(cx - rc)); gx <= Math.min(GW - 1, Math.ceil(cx + rc)); gx++) {
+          const d = Math.hypot(gx - cx, gy - cy) / rc;
+          if (d >= 1) continue;
+          const f = (1 - d) * (1 - d);
+          wvx[gy * GW + gx] += vx * f; wvy[gy * GW + gx] += vy * f;
+        }
+      }
+    }
+    function stepWind(time: number) {
+      // blur + decay
+      for (let gy = 0; gy < GH; gy++) {
+        for (let gx = 0; gx < GW; gx++) {
+          const i = gy * GW + gx;
+          const l = gx > 0 ? i - 1 : i, r = gx < GW - 1 ? i + 1 : i, u = gy > 0 ? i - GW : i, d = gy < GH - 1 ? i + GW : i;
+          tvx[i] = (wvx[i] * 4 + wvx[l] + wvx[r] + wvx[u] + wvx[d]) / 8 * 0.965;
+          tvy[i] = (wvy[i] * 4 + wvy[l] + wvy[r] + wvy[u] + wvy[d]) / 8 * 0.965;
+        }
+      }
+      [wvx, tvx] = [tvx, wvx];
+      [wvy, tvy] = [tvy, wvy];
+      if (gust >= 0) {
+        // a front sweeping left to right
+        const fx = GX0 + gust * (GW * CS);
+        for (let y = GY0; y < GY0 + GH * CS; y += CS * 2) inject(fx, y + Math.sin(y * 0.01 + time) * 30, 0.16, -0.02 + Math.sin(y * 0.02) * 0.03, 80);
+        gust += 0.009;
+        if (gust > 1) gust = -1;
+      }
+    }
+    const windAt = (x: number, y: number, out: number[]) => {
+      const gx = Math.max(0, Math.min(GW - 1, ((x - GX0) / CS) | 0)), gy = Math.max(0, Math.min(GH - 1, ((y - GY0) / CS) | 0));
+      out[0] = wvx[gy * GW + gx]; out[1] = wvy[gy * GW + gx];
+    };
+    function doGust() { if (mode === 'wind') gust = 0; }
+    gustBtn.addEventListener('click', doGust);
+
+    // ---- pointer -----------------------------------------------------------------
+    let mx = -1e4, my = -1e4, lmx = -1e4, lmy = -1e4, down = false, grabbed = -1;
+    const trail: { x: number; y: number; t: number }[] = [];
+    const toDrawing = (e: PointerEvent) => {
+      const r = view();
+      return [(e.clientX - r.x) / r.s, (e.clientY - r.y) / r.s];
+    };
+    canvas.addEventListener('pointerdown', (e) => {
+      audio.start();
+      canvas.setPointerCapture(e.pointerId);
+      down = true;
+      [mx, my] = toDrawing(e);
+      lmx = mx; lmy = my;
+      if (mode === 'yarn') grab();
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      const [nx, ny] = toDrawing(e);
+      lmx = mx; lmy = my;
+      mx = nx; my = ny;
+      if (lmx < -1e3) return;
+      if (down) trail.push({ x: mx, y: my, t: performance.now() });
+      if (down && (mode === 'harp' || mode === 'cut')) sweep(lmx, lmy, mx, my);
+    });
+    const up = () => { down = false; grabbed = -1; };
+    canvas.addEventListener('pointerup', up);
+    canvas.addEventListener('pointercancel', up);
+
+    function grab() {
+      let best = -1, bd = 22 * 22;
+      for (let i = 0; i < N; i++) {
+        if (isLink[i] && !free[i]) continue;
+        const d = (X[i] - mx) ** 2 + (Y[i] - my) ** 2;
+        if (d < bd) { bd = d; best = i; }
+      }
+      grabbed = best;
+    }
+
+    // segment/segment intersection, returns param along (a->b) or -1
+    function cross(ax: number, ay: number, bx: number, by: number, cx: number, cy: number, dx: number, dy: number) {
+      const rx = bx - ax, ry = by - ay, sx = dx - cx, sy = dy - cy;
+      const den = rx * sy - ry * sx;
+      if (Math.abs(den) < 1e-9) return -1;
+      const t = ((cx - ax) * sy - (cy - ay) * sx) / den;
+      const u = ((cx - ax) * ry - (cy - ay) * rx) / den;
+      return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? u : -1;
+    }
+
+    // pointer swept from a to b: pluck or cut every thread it crosses
+    function sweep(ax: number, ay: number, bx: number, by: number) {
+      const minx = Math.min(ax, bx), maxx = Math.max(ax, bx), miny = Math.min(ay, by), maxy = Math.max(ay, by);
+      const vx = bx - ax, vy = by - ay, speed = Math.hypot(vx, vy);
+      if (speed < 0.01) return;
+      const now = performance.now() / 1000;
+      const pan = (ax / w) * 2 - 1;
+      let notes = 0;
+      for (let t = 0; t < T; t++) {
+        if (bx1[t] < minx || bx0[t] > maxx || by1[t] < miny || by0[t] > maxy) continue;
+        const s = tStart[t], e = s + tLen[t] - 1;
+        if (mode === 'cut' && free[s]) continue;
+        for (let i = s; i < e; i++) {
+          if (broken[i]) continue;
+          const u = cross(X[i], Y[i], X[i + 1], Y[i + 1], ax, ay, bx, by);
+          if (u < 0) continue;
+          if (mode === 'harp') {
+            if (now - tLast[t] > 0.09) {
+              tLast[t] = now;
+              const vel = Math.min(1, 0.35 + speed * 0.05);
+              tAmp[t] = Math.min(9, 2.5 + speed * 0.35);
+              tPhase[t] = 0;
+              if (notes++ < 8) audio.pluck(tFreq[t], pan, vel * Math.min(1, 0.5 + tWidth[t] * 0.15));
+            }
+          } else {
+            snipThread(t, i, vx, vy);
+            audio.snip(pan, Math.min(1.5, 3 / tWidth[t]));
+          }
+          break;
+        }
+      }
+    }
+
+    function snipThread(t: number, seg: number, vx: number, vy: number) {
+      broken[seg] = 1;
+      const s = tStart[t], n = tLen[t];
+      for (let i = s; i < s + n; i++) {
+        free[i] = 1;
+        // little kick near the cut, in the swipe direction
+        const f = Math.max(0, 1 - Math.abs(i - seg) / 8) * 0.25;
+        PX[i] = X[i] - vx * f; PY[i] = Y[i] - vy * f;
+      }
+    }
+
+    // ---- keys --------------------------------------------------------------------
+    window.addEventListener('keydown', (e) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const k = e.key.toLowerCase();
+      if (k >= '1' && k <= '4') { audio.start(); setMode(MODES[+k - 1]); }
+      else if (k === 'r') reweave();
+      else if (k === 'm') { audio.start(); toggleSound(); }
+      else if (k === 'g') { audio.start(); doGust(); }
+    });
+
+    // ---- simulation ----------------------------------------------------------------
+    const pileBins = 2, pileW = 4;
+    let pile = new Float32Array(1);
+    const wtmp = [0, 0];
+    let ripRate = 0, windLevel = 0;
+
+    function step(time: number) {
+      const b = bounds();
+      const nBins = Math.ceil((b.r - b.l) / pileW) + 1;
+      if (pile.length !== nBins) pile = new Float32Array(nBins);
+      // pile height from last frame's settled points
+      const counts = new Float32Array(nBins);
+      for (let i = 0; i < N; i++) {
+        if (!free[i] || Y[i] < b.b - 160) continue;
+        counts[Math.max(0, Math.min(nBins - 1, ((X[i] - b.l) / pileW) | 0))] += 1;
+      }
+      for (let k = 0; k < nBins; k++) {
+        let s = 0, c = 0;
+        for (let j = -pileBins * 3; j <= pileBins * 3; j++) { const q = k + j; if (q >= 0 && q < nBins) { s += counts[q]; c++; } }
+        pile[k] = Math.min(260, (s / c) * 2.2);
+      }
+
+      const isWind = mode === 'wind', yarn = mode === 'yarn';
+      if (isWind) {
+        stepWind(time);
+        if (mx > -1e3 && lmx > -1e3) {
+          const vx = mx - lmx, vy = my - lmy;
+          if (Math.abs(vx) + Math.abs(vy) > 0.01) inject(mx, my, vx * 0.03, vy * 0.03, 70);
+        }
+        if (down) {
+          // breath: blow outward from the cursor
+          for (let a = 0; a < 12; a++) {
+            const an = (a / 12) * Math.PI * 2;
+            inject(mx + Math.cos(an) * 40, my + Math.sin(an) * 40, Math.cos(an) * 0.08, Math.sin(an) * 0.08, 60);
+          }
+        }
+        // ambient breeze
+        const br = 0.02 * Math.sin(time * 0.37) + 0.012;
+        for (let gy = 0; gy < GH; gy++) {
+          const row = br * 0.03 * (1 + Math.sin(time * 0.9 + gy * 0.35));
+          for (let gx = 0; gx < GW; gx++) wvx[gy * GW + gx] += row;
+        }
+      }
+      lmx = mx; lmy = my;
+
+      let ripped = 0, windSum = 0;
+      const now = time;
+      for (let t = 0; t < T; t++) {
+        const s = tStart[t], e = s + tLen[t];
+        const ret = tRet[t];
+        if (ret >= 0 && now >= ret) {
+          // flying home
+          let maxd = 0;
+          for (let i = s; i < e; i++) {
+            X[i] += (RX[i] - X[i]) * 0.14; Y[i] += (RY[i] - Y[i]) * 0.14;
+            PX[i] = X[i]; PY[i] = Y[i];
+            maxd = Math.max(maxd, Math.abs(RX[i] - X[i]) + Math.abs(RY[i] - Y[i]));
+          }
+          if (maxd < 0.3) {
+            for (let i = s; i < e; i++) { X[i] = PX[i] = RX[i]; Y[i] = PY[i] = RY[i]; free[i] = 0; broken[i] = 0; }
+            tRet[t] = -1;
+          }
+          continue;
+        }
+        if (mode === 'harp' && !free[s] && ret < 0) { tAmp[t] *= 0.955; tPhase[t] += 2.1; continue; }
+        for (let i = s; i < e; i++) integrate(i, b, isWind);
+      }
+      // link points (yarn bridges)
+      if (yarn) for (let i = 0; i < N; i++) if (isLink[i]) integrate(i, b, false);
+
+      // grabbed point follows the pointer
+      if (grabbed >= 0) {
+        X[grabbed] = mx; Y[grabbed] = my; PX[grabbed] = mx; PY[grabbed] = my;
+        free[grabbed] = 1;
+      }
+
+      // constraints: one-sided (string can slack, can't stretch)
+      for (let it = 0; it < 3; it++) {
+        for (let i = 0; i < N - 1; i++) {
+          if (broken[i]) continue;
+          if (segKind[i] === 1 && !yarn) continue;
+          const dx = X[i + 1] - X[i], dy = Y[i + 1] - Y[i];
+          const d = Math.sqrt(dx * dx + dy * dy);
+          const r = rest[i];
+          if (d <= r) continue;
+          const wa = free[i] ? 1 : K[i] >= 1 ? 0 : 0.5, wb = free[i + 1] ? 1 : K[i + 1] >= 1 ? 0 : 0.5;
+          const ws = wa + wb;
+          if (ws === 0) continue;
+          const k = (d - r) / d / ws;
+          X[i] += dx * k * wa; Y[i] += dy * k * wa;
+          X[i + 1] -= dx * k * wb; Y[i + 1] -= dy * k * wb;
+        }
+        if (grabbed >= 0) { X[grabbed] = mx; Y[grabbed] = my; }
+      }
+
+      // yarn: anchored points that got dragged too far rip out
+      if (yarn) {
+        for (let i = 0; i < N; i++) {
+          if (free[i]) continue;
+          const dx = X[i] - RX[i], dy = Y[i] - RY[i];
+          if (dx * dx + dy * dy > BREAK * BREAK) { free[i] = 1; ripped++; }
+        }
+      }
+      if (isWind) {
+        for (let i = 0; i < wvx.length; i += 7) windSum += Math.abs(wvx[i]) + Math.abs(wvy[i]);
+        windSum /= wvx.length / 7;
+      }
+      ripRate = ripRate * 0.85 + Math.min(1, ripped / 12) * 0.15;
+      windLevel = windLevel * 0.9 + Math.min(1, windSum * 2.2) * 0.1;
+      audio.zip(yarn ? ripRate : 0);
+      audio.wind(isWind ? windLevel : 0);
+
+      function integrate(i: number, b: { l: number; r: number; b: number }, wind: boolean) {
+        const fr = free[i];
+        const damp = fr ? 0.99 : wind ? 0.94 : 0.9;
+        let vx = (X[i] - PX[i]) * damp, vy = (Y[i] - PY[i]) * damp;
+        PX[i] = X[i]; PY[i] = Y[i];
+        if (fr) {
+          vy += GRAVITY;
+        } else {
+          const k = K[i];
+          if (k >= 1) { X[i] = RX[i]; Y[i] = RY[i]; PX[i] = X[i]; PY[i] = Y[i]; return; }
+          vx += (RX[i] - X[i]) * k; vy += (RY[i] - Y[i]) * k;
+          if (wind) {
+            windAt(X[i], Y[i], wtmp);
+            let tx = wtmp[0] * 3, ty = wtmp[1] * 3;
+            const tm = Math.hypot(tx, ty);
+            if (tm > 5) { tx *= 5 / tm; ty *= 5 / tm; }
+            vx += (tx - vx) * 0.06; vy += (ty - vy) * 0.06;
+          }
+        }
+        X[i] += vx; Y[i] += vy;
+        if (fr) {
+          const bin = Math.max(0, Math.min(pile.length - 1, ((X[i] - b.l) / pileW) | 0));
+          const floor = b.b - pile[bin] * pileU[i];
+          if (Y[i] > floor) {
+            Y[i] = floor;
+            PX[i] = X[i] - (X[i] - PX[i]) * 0.5; // friction
+            PY[i] = Y[i];
+          }
+          if (X[i] < b.l + 2) { X[i] = b.l + 2; PX[i] = X[i]; }
+          if (X[i] > b.r - 2) { X[i] = b.r - 2; PX[i] = X[i]; }
+        }
+      }
+    }
+
+    // ---- rendering ---------------------------------------------------------------
+    function drawThreadPath(t: number) {
+      const s = tStart[t], e = s + tLen[t];
+      ctx.moveTo(X[s], Y[s]);
+      for (let i = s + 1; i < e; i++) {
+        if (broken[i - 1]) ctx.moveTo(X[i], Y[i]);
+        else ctx.lineTo(X[i], Y[i]);
+      }
+    }
+
+    function drawVibrating(t: number) {
+      const s = tStart[t], n = tLen[t];
+      const a = tAmp[t] * Math.sin(tPhase[t]);
+      for (let j = 0; j < n; j++) {
+        const i = s + j;
+        const i0 = j > 0 ? i - 1 : i, i1 = j < n - 1 ? i + 1 : i;
+        let nx = -(Y[i1] - Y[i0]), ny = X[i1] - X[i0];
+        const l = Math.hypot(nx, ny) || 1;
+        nx /= l; ny /= l;
+        const off = a * Math.sin((Math.PI * j) / (n - 1));
+        if (j === 0) ctx.moveTo(X[i] + nx * off, Y[i] + ny * off);
+        else ctx.lineTo(X[i] + nx * off, Y[i] + ny * off);
+      }
+    }
+
+    function frame() {
+      const time = performance.now() / 1000;
+      step(time);
+      const r = view();
+      ctx.fillStyle = PAPER;
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalAlpha = GHOST;
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.drawImage(img, r.x, r.y, r.w, r.h);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1;
+      ctx.save();
+      ctx.translate(r.x, r.y);
+      ctx.scale(r.s, r.s);
+      ctx.lineJoin = ctx.lineCap = 'round';
+      ctx.strokeStyle = 'rgba(20,19,18,0.88)';
+      const harp = mode === 'harp';
+      for (let bk = 0; bk < NB; bk++) {
+        const list = buckets[bk];
+        if (!list.length) continue;
+        ctx.lineWidth = (bk + 1) / 2;
+        ctx.beginPath();
+        for (const t of list) {
+          if (harp && tAmp[t] > 0.15) continue;
+          drawThreadPath(t);
+        }
+        ctx.stroke();
+      }
+      // freed yarn bridges
+      if (mode === 'yarn') {
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        for (let i = 0; i < N - 1; i++) {
+          if (segKind[i] !== 1 || broken[i] || (!free[i] && !free[i + 1])) continue;
+          ctx.moveTo(X[i], Y[i]);
+          ctx.lineTo(X[i + 1], Y[i + 1]);
+        }
+        ctx.stroke();
+      }
+      // vibrating strings in accent
+      if (harp) {
+        ctx.strokeStyle = ACCENT;
+        for (let t = 0; t < T; t++) {
+          if (tAmp[t] <= 0.15) continue;
+          ctx.lineWidth = tWidth[t] * 0.8 + 0.4;
+          ctx.beginPath();
+          drawVibrating(t);
+          ctx.stroke();
+        }
+      }
+      // pointer feedback
+      const nowMs = performance.now();
+      while (trail.length && nowMs - trail[0].t > 160) trail.shift();
+      if (trail.length > 1 && (mode === 'cut' || mode === 'harp')) {
+        ctx.strokeStyle = mode === 'cut' ? 'rgba(180,50,30,0.55)' : 'rgba(20,19,18,0.18)';
+        ctx.lineWidth = 2 / r.s;
+        ctx.beginPath();
+        ctx.moveTo(trail[0].x, trail[0].y);
+        for (const p of trail) ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+      }
+      if (mode === 'yarn' && grabbed >= 0) {
+        ctx.fillStyle = ACCENT;
+        ctx.beginPath();
+        ctx.arc(X[grabbed], Y[grabbed], 4 / r.s + 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (mode === 'wind' && down) {
+        ctx.strokeStyle = 'rgba(20,19,18,0.25)';
+        ctx.lineWidth = 1 / r.s;
+        const pr = 30 + 10 * Math.sin(time * 8);
+        ctx.beginPath();
+        ctx.arc(mx, my, pr, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      if ((frameNo++ & 15) === 0) updateStat();
+      requestAnimationFrame(frame);
+    }
+    let frameNo = 0;
+
+    function updateStat() {
+      if (mode === 'cut' || mode === 'yarn') {
+        let f = 0;
+        let tot = 0;
+        for (let i = 0; i < N; i++) if (!isLink[i]) { tot++; if (free[i]) f++; }
+        const pct = Math.round((f / tot) * 100);
+        stat.textContent = mode === 'cut' ? `${pct}% on the floor` : `${pct}% unravelled`;
+      } else stat.textContent = mode === 'harp' ? `${T} strings` : `${T} hairs`;
+    }
+
+    // small touch screens: keep only the mode select
+    if (window.matchMedia('(pointer: coarse)').matches && window.innerWidth < 600) {
+      document.getElementById('mode-desc')!.style.display = 'none';
+      hint.style.display = 'none';
+      (document.getElementById('controls') as HTMLElement).style.width = '170px';
+    }
+
+    setMode('harp');
+    frame();
+  }
+
+  main();
+</script>
