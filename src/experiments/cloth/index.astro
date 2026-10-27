@@ -186,22 +186,27 @@
     }
   }
 
-  canvas.width = W;
-  canvas.height = H;
+  // Backing store at device resolution (capped at 2x); physics stays in CSS px.
+  function resizeCanvas() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  resizeCanvas();
   initCloth();
 
   window.addEventListener('resize', () => {
     W = window.innerWidth;
     H = window.innerHeight;
-    canvas.width = W;
-    canvas.height = H;
+    resizeCanvas();
     initCloth();
   });
 
   // ── Physics ──────────────────────────────────────────────────────────────────
   function step() {
     tick++;
-    const tearSq = TEAR_RADIUS * TEAR_RADIUS;
 
     const wind = windOn
       ? WIND_FORCE * (0.6 + 0.4 * Math.sin(tick * WIND_GUST_FREQ * 6.28)) * (0.8 + 0.2 * Math.random())
@@ -303,6 +308,8 @@
   document.getElementById('reset-btn')!.addEventListener('click', initCloth);
 
   window.addEventListener('keydown', (e) => {
+    const tag = (e.target as HTMLElement | null)?.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     if (e.key === 'w' || e.key === 'W') setWind(!windOn);
     if (e.key === 'r' || e.key === 'R') initCloth();
   });
