@@ -1,0 +1,782 @@
+---
+---
+
+<div id="xh-area">
+  <div id="xh-stage">
+    <canvas id="xh-canvas" aria-label="Layered hills"></canvas>
+    <svg id="xh-overlay" viewBox="0 0 1000 700" aria-hidden="true">
+      <g id="xh-guides"></g>
+    </svg>
+  </div>
+</div>
+
+<div id="xh-controls">
+  <div class="xh-head">
+    <span class="xh-title">SHAPE</span>
+    <span class="xh-sub" id="shape-sub">settings for new shapes</span>
+  </div>
+  <select id="type">
+    <option value="curve" selected>Curve (dome)</option>
+    <option value="peak">Peak (spire)</option>
+  </select>
+  <label><span id="sharp-label">sharpness: 0.60</span><input id="sharp" type="range" min="0" max="1" step="0.01" value="0.6" /></label>
+  <label><span id="layer-label">layer: 3</span><input id="layer" type="range" min="1" max="8" step="1" value="3" /></label>
+  <div class="xh-swatches" id="swatches"></div>
+  <div class="xh-btns">
+    <button class="xh-btn" id="dupBtn" disabled>DUPLICATE</button>
+    <button class="xh-btn xh-danger" id="delBtn" disabled>DELETE</button>
+  </div>
+
+  <div class="xh-head" style="margin-top:8px;">
+    <span class="xh-title">PENCIL</span>
+    <span class="xh-sub">how hills are shaded and how they affect each other</span>
+  </div>
+  <label><span id="rim-label">rim: 22</span><input id="rim" type="range" min="4" max="80" step="1" value="22" /></label>
+  <label><span id="mist-label">mist depth: 260</span><input id="mist" type="range" min="40" max="600" step="1" value="260" /></label>
+  <label><span id="halo-label">halo: 26</span><input id="halo" type="range" min="0" max="90" step="1" value="26" /></label>
+  <label><span id="merge-label">merge: 40</span><input id="merge" type="range" min="0" max="140" step="1" value="40" /></label>
+  <label><span id="hatch-label">hatching: 0.75</span><input id="hatch" type="range" min="0" max="1" step="0.01" value="0.75" /></label>
+  <label><span id="stroke-label">stroke size: 1.00</span><input id="stroke" type="range" min="0.5" max="3" step="0.01" value="1" /></label>
+  <label><span id="wash-label">wash: 0.60</span><input id="wash" type="range" min="0" max="1" step="0.01" value="0.6" /></label>
+  <label><span id="grain-label">paper grain: 0.55</span><input id="grain" type="range" min="0" max="1" step="0.01" value="0.55" /></label>
+  <label><span id="wobble-label">hand wobble: 2.5</span><input id="wobble" type="range" min="0" max="10" step="0.1" value="2.5" /></label>
+  <label><span id="light-label">light angle: 50</span><input id="light" type="range" min="0" max="180" step="1" value="50" /></label>
+</div>
+
+<div id="xh-actions">
+  <button class="xh-action" id="toolCurve">CURVE [Q]</button>
+  <button class="xh-action" id="toolPeak">PEAK [W]</button>
+  <button class="xh-action" id="handlesBtn">HANDLES [H]</button>
+  <button class="xh-action" id="resetBtn">RESET [R]</button>
+  <button class="xh-action xh-danger" id="clearBtn">CLEAR [C]</button>
+  <button class="xh-action xh-accent" id="exportBtn">EXPORT PNG [E]</button>
+</div>
+
+<style is:global>
+  #xh-area {
+    position: fixed;
+    top: 48px; left: 24px; right: 272px; bottom: 72px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #xh-stage { position: relative; }
+  #xh-canvas { width: 100%; height: 100%; display: block; border-radius: 2px; }
+  #xh-overlay { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  #xh-overlay.hide-guides #xh-guides { display: none; }
+  #xh-guides .outline { fill: none; stroke: rgba(20,20,40,0.35); stroke-width: 1; stroke-dasharray: 4 4; pointer-events: none; }
+  #xh-guides .outline.sel { stroke: #1d5fd0; stroke-width: 1.5; stroke-dasharray: 6 4; }
+  #xh-guides .apex { fill: #fff; stroke: rgba(20,20,40,0.6); stroke-width: 1.5; cursor: grab; }
+  #xh-guides .apex.sel { fill: #1d5fd0; stroke: #fff; }
+  #xh-guides .wh { fill: #fff; stroke: #1d5fd0; stroke-width: 1.5; cursor: ew-resize; }
+
+  #xh-controls {
+    position: fixed; top: 64px; right: 24px; width: 224px;
+    max-height: calc(100vh - 140px); overflow-y: auto;
+    font-family: monospace; font-size: 11px; color: rgba(255,255,255,0.7);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  #xh-controls label { display: flex; flex-direction: column; gap: 3px; }
+  #xh-controls input[type=range] { accent-color: white; width: 100%; }
+  #xh-controls select {
+    background: #000; border: 1px solid rgba(255,255,255,0.3); color: rgba(255,255,255,0.8);
+    font-family: monospace; font-size: 11px; padding: 4px 6px; cursor: pointer; width: 100%;
+  }
+  .xh-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 2px; }
+  .xh-title { font-size: 12px; color: rgba(255,255,255,0.9); letter-spacing: 0.06em; }
+  .xh-sub { font-size: 10px; color: rgba(255,255,255,0.4); line-height: 1.4; }
+  .xh-swatches { display: flex; gap: 6px; flex-wrap: wrap; }
+  .xh-swatch { width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 1px solid rgba(255,255,255,0.25); cursor: pointer; }
+  .xh-swatch.on { box-shadow: 0 0 0 2px #000, 0 0 0 3px #fff; }
+  .xh-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+  .xh-btn, .xh-action {
+    background: transparent; border: 1px solid rgba(255,255,255,0.4); color: rgba(255,255,255,0.7);
+    font-family: monospace; letter-spacing: 0.08em; cursor: pointer;
+  }
+  .xh-btn { font-size: 10px; padding: 4px 8px; }
+  .xh-btn:disabled { opacity: 0.35; cursor: default; }
+  .xh-action { font-size: 12px; padding: 6px 14px; }
+  .xh-action.on { background: rgba(255,255,255,0.15); color: #fff; border-color: #fff; }
+  .xh-danger { border-color: rgba(255,110,90,0.5); color: rgba(255,140,120,0.85); }
+  .xh-accent { border-color: rgba(255,255,0,0.5); color: rgba(255,255,0,0.8); }
+  #xh-actions { position: fixed; bottom: 24px; right: 24px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+  @media (max-width: 800px) {
+    #xh-area { top: 44px; left: 12px; right: 12px; bottom: calc(38vh + 64px); }
+    #xh-controls { top: auto; bottom: 64px; left: 12px; right: 12px; width: auto; max-height: 38vh; }
+    #xh-actions { bottom: 16px; right: 12px; left: 12px; }
+    .xh-action { font-size: 10px; padding: 6px 8px; }
+  }
+</style>
+
+<script>
+  // Layered hill renderer. CPU computes, per layer and per pixel column, the merged ridge height
+  // (smooth max of every shape in that layer) plus its slope and blended palette. A fragment shader
+  // then composites the layers front-to-back and shades them like colored pencil. See README.md.
+
+  const DW = 1000, DH = 700;  // design units (y up, origin bottom-left)
+  const MAXL = 8;
+  const MAX_SHAPES = 200;
+
+  type ShapeType = 'curve' | 'peak';
+  interface Shape { type: ShapeType; cx: number; top: number; w: number; sharp: number; layer: number; pal: number }
+
+  const PALETTES: { name: string; edge: string; body: string }[] = [
+    { name: 'Violet', edge: '#2b2774', body: '#8582d4' },
+    { name: 'Plum', edge: '#47204f', body: '#a174ad' },
+    { name: 'Umber', edge: '#3c1a10', body: '#ad6a3e' },
+    { name: 'Terracotta', edge: '#6b2810', body: '#e0904a' },
+    { name: 'Jade', edge: '#0e3a39', body: '#43a487' },
+    { name: 'Pine', edge: '#132c1a', body: '#56853c' },
+    { name: 'Ultramarine', edge: '#111966', body: '#4560cc' },
+    { name: 'Ochre', edge: '#644410', body: '#dcb650' },
+  ];
+
+  const hex = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  const PAL_RGB = PALETTES.map((p) => ({ edge: hex(p.edge), body: hex(p.body) }));
+
+  // Composition loosely after Xul Solar's 1949 landscape
+  function xulScene(): { shapes: Shape[]; sun: [number, number, number] } {
+    const shapes: Shape[] = [];
+    const add = (type: ShapeType, cx: number, top: number, w: number, sharp: number, layer: number, pal: number) =>
+      shapes.push({ type, cx, top, w: type === 'curve' ? w * 1.35 : w, sharp, layer, pal });
+    // far violet ridge — overlapping domes merge into one undulating line
+    [[0, 610], [100, 645], [215, 615], [330, 655], [460, 610], [585, 640], [705, 615], [830, 655], [950, 620], [1040, 640]]
+      .forEach(([x, t]) => add('curve', x, t, 85, 0.3, 0, 0));
+    add('peak', 95, 690, 30, 0.4, 0, 5);
+    add('peak', 228, 668, 25, 0.4, 0, 1);
+    // plum middle range
+    add('curve', 300, 525, 125, 0.45, 1, 1);
+    add('curve', 560, 565, 135, 0.45, 1, 1);
+    add('curve', 760, 480, 120, 0.45, 1, 0);
+    add('peak', 724, 520, 34, 0.4, 1, 5);
+    // tall umber thimbles
+    add('curve', 140, 620, 95, 0.75, 2, 2);
+    add('curve', 975, 600, 85, 0.75, 2, 2);
+    add('peak', 60, 515, 41, 0.4, 2, 5);
+    // terracotta hills
+    add('curve', 370, 370, 150, 0.5, 3, 3);
+    add('curve', 645, 450, 110, 0.72, 3, 3);
+    add('curve', 860, 410, 120, 0.6, 3, 2);
+    add('peak', 515, 440, 39, 0.4, 3, 4);
+    // front umber hills
+    add('curve', 55, 330, 115, 0.55, 4, 2);
+    add('curve', 1000, 400, 120, 0.6, 4, 3);
+    add('peak', 590, 330, 55, 0.4, 4, 5);
+    // green foreground
+    add('curve', 300, 190, 340, 0.3, 5, 4);
+    add('curve', 730, 165, 320, 0.3, 5, 4);
+    add('peak', 140, 160, 51, 0.4, 6, 5);
+    add('peak', 760, 140, 51, 0.4, 6, 5);
+    return { shapes, sun: [614, 662, 34] };
+  }
+
+  // ---------- state ----------
+  let shapes: Shape[] = [];
+  let sun: [number, number, number] = [614, 662, 34];
+  let sel = -1;
+  let showGuides = true;
+  const cur = { type: 'curve' as ShapeType, sharp: 0.6, layer: 2, pal: 3 };
+  const style = { rim: 22, mist: 260, halo: 26, merge: 40, hatch: 0.75, grain: 0.55, wobble: 2.5, light: 50, wash: 0.6, stroke: 1 };
+
+  const STORE_KEY = 'xul-hills:v4';
+  function save() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify({ shapes, sun, style })); } catch {}
+  }
+  function load(): boolean {
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      if (!raw) return false;
+      const d = JSON.parse(raw);
+      if (!Array.isArray(d.shapes)) return false;
+      shapes = d.shapes; sun = d.sun ?? sun; Object.assign(style, d.style ?? {});
+      return true;
+    } catch { return false; }
+  }
+
+  // ---------- profiles ----------
+  // Height (design units) of a single shape at x, or -Infinity outside its footprint.
+  function profile(s: Shape, x: number): number {
+    const a = Math.abs((x - s.cx) / s.w);
+    if (a >= 1) return -Infinity;
+    if (s.type === 'curve') {
+      // round top, flared skirt: 0 = soft mound, 1 = tall thimble
+      const p = 1.6 + s.sharp * 3.4, m = 1.3 - s.sharp * 0.75;
+      return s.top * Math.pow(1 - Math.pow(a, p), m);
+    }
+    const q = 0.45 + s.sharp * 2.2;               // <1 convex peak, 1 cone, >1 concave spire
+    return s.top * Math.pow(1 - a, q);
+  }
+
+  function smax(a: number, b: number, k: number) {
+    if (k <= 0) return Math.max(a, b);
+    const h = Math.max(k - Math.abs(a - b), 0) / k;
+    return Math.max(a, b) + h * h * k * 0.25;
+  }
+
+  // ---------- GL ----------
+  const canvas = document.getElementById('xh-canvas') as HTMLCanvasElement;
+  const overlay = document.getElementById('xh-overlay') as unknown as SVGSVGElement;
+  const guides = document.getElementById('xh-guides') as unknown as SVGGElement;
+  const stage = document.getElementById('xh-stage') as HTMLDivElement;
+  const area = document.getElementById('xh-area') as HTMLDivElement;
+
+  // Errors replace the stage with a message instead of leaving a blank canvas
+  function fail(msg: string): never {
+    const p = document.createElement('p');
+    p.style.cssText = 'color:#ff6b5b;font-family:monospace;font-size:12px;white-space:pre-wrap;max-width:640px;';
+    p.textContent = msg;
+    area.replaceChildren(p);
+    throw new Error(msg);
+  }
+
+  const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true }) as WebGL2RenderingContext;
+  if (!gl) fail('WebGL2 is not supported in this browser.');
+
+  const VS = `#version 300 es
+  in vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }`;
+
+  const FS = `#version 300 es
+precision highp float;
+uniform sampler2D uData;   // rows 0..7 geometry, 8..15 edge rgb, 16..23 body rgb, 24..31 front envelope
+uniform float uScale;      // device px per design unit
+uniform vec3 uSun;
+uniform float uRim, uMist, uHalo, uHatch, uGrain, uWobble, uLight, uWash, uStroke;
+out vec4 o;
+
+const vec3 PAPER = vec3(0.955, 0.935, 0.905);
+const vec3 MIST  = vec3(0.935, 0.92, 0.95);
+
+float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
+}
+
+float fbm(vec2 p) {
+  float a = 0.5, v = 0.0;
+  for (int i = 0; i < 4; i++) { v += a * noise(p); p = p * 2.03 + 17.1; a *= 0.5; }
+  return v / 0.9375;
+}
+
+// Paper tooth: high where the paper surface sticks up and the pencil skips over it.
+float tooth(vec2 p) { return fbm(p * vec2(2.6, 3.4)) * 0.45 + noise(p * 6.1) * 0.35 + noise(p * 0.35) * 0.2; }
+
+// One family of pencil strokes in stroke space uv (x along the stroke direction, y across).
+// Strokes sit in bands one lead-width apart; each band is cut into tapered marks of random
+// length with a gap after each. Returns pressure 0..1; tint is a per-stroke random value.
+float strokes(vec2 uv, float seed, out float tint) {
+  float w = 1.35 * uStroke;
+  float band = floor(uv.y / w);
+  float fy = fract(uv.y / w) - 0.5;
+  float rb = hash(vec2(band * 0.137, seed));
+  float len = (28.0 + 40.0 * rb) * uStroke;
+  float x = uv.x / len + rb * 13.0;
+  float seg = floor(x), fx = fract(x);
+  float rs = hash(vec2(seg * 0.071 + 0.37, band * 0.131 + seed));
+  float rs2 = hash(vec2(seg * 0.173 + 5.1, band * 0.097 + seed * 2.3));
+  tint = rs2;
+  float t = fx / (0.9 + 0.1 * rs);
+  if (t > 1.0) return 0.0;
+  float taper = smoothstep(0.0, 0.06, t) * smoothstep(1.0, 0.88, t);
+  float drift = (rs - 0.5) * 0.3 + (t - 0.5) * (rs2 - 0.5) * 0.35;   // hand curvature
+  float prof = 1.0 - smoothstep(0.16, 0.5, abs(fy - drift));
+  return prof * taper * mix(0.7, 1.0, rs);
+}
+
+// Pigment over paper, multiplied like real layers: blotchy watercolor wash, then a hatching pass
+// along uv and a lighter crossing pass where the color is dense.
+vec3 paint(vec3 base, vec2 p, vec2 uv, vec3 pig, vec3 wash, float density, float seed) {
+  float th = tooth(p);
+  vec3 col = base;
+  float wa = uWash * density * (0.75 + 0.5 * fbm(p * 0.008 + seed * 3.1));
+  wa *= 1.0 - 0.18 * (noise(p * 2.2 + seed) - 0.5) * 2.0;           // granulation
+  col *= mix(vec3(1.0), wash, clamp(wa, 0.0, 1.0));
+
+  float tint;
+  float s1 = strokes(uv, seed, tint);
+  float dep1 = density * mix(1.0, s1 * 1.5, uHatch) - (th - 0.5) * uGrain * 1.1;
+  vec3 p1 = clamp(pig * (1.0 + (tint - 0.5) * vec3(0.16, -0.06, 0.14)), 0.0, 1.0);
+  col *= mix(vec3(1.0), p1, clamp(dep1, 0.0, 1.0));
+
+  vec2 uv2 = mat2(0.985, 0.17, -0.17, 0.985) * uv + 57.0;
+  float s2 = strokes(uv2, seed + 9.0, tint);
+  float dep2 = density * density * 0.6 * mix(1.0, s2 * 1.5, uHatch) - (th - 0.5) * uGrain * 1.4;
+  vec3 p2 = clamp(pig * (1.0 + (tint - 0.5) * vec3(-0.12, 0.08, 0.2)), 0.0, 1.0);
+  col *= mix(vec3(1.0), mix(vec3(1.0), p2, 0.35), clamp(dep2, 0.0, 1.0));
+  return col;
+}
+
+vec3 sky(vec2 p) {
+  float t = p.y / 700.0;
+  vec3 top = vec3(0.97, 0.86, 0.40);
+  vec3 c = mix(MIST / PAPER, top / PAPER, smoothstep(0.55, 1.0, t));
+  vec2 uv = vec2(p.x, p.y + sin(p.x * 0.011) * 4.0);
+  vec3 col = paint(PAPER, p, uv, c, mix(vec3(1.0), c, 0.6), 0.8, 0.0);
+  // sun: strokes run around it
+  vec2 q = p - uSun.xy;
+  float r = length(q), d = r / uSun.z;
+  if (d < 1.15) {
+    float cov = clamp((1.0 - d) * uSun.z * uScale + 0.5, 0.0, 1.0);
+    vec3 sc = mix(vec3(1.0, 0.74, 0.24), vec3(0.9, 0.38, 0.14), smoothstep(0.15, 1.0, d));
+    vec2 suv = vec2(atan(q.y, q.x) * uSun.z, r);
+    vec3 sun = paint(PAPER, p, suv, sc, mix(vec3(1.0), sc, 0.5), 0.95, 3.0);
+    col = mix(col, sun, cov);
+  }
+  return col;
+}
+
+vec3 shade(vec2 p, int L, float H, float s, float arc) {
+  vec3 edge = texelFetch(uData, ivec2(int(gl_FragCoord.x), L + 8), 0).rgb;
+  vec3 body = texelFetch(uData, ivec2(int(gl_FragCoord.x), L + 16), 0).rgb;
+  float dv = H - p.y;
+  float d = dv / sqrt(1.0 + s * s);              // ≈ perpendicular distance to the ridge
+  vec2 nrm = normalize(vec2(-s, 1.0));
+  float la = radians(uLight);
+  float lam = dot(nrm, vec2(cos(la), sin(la)));
+
+  float rim = exp(-d / uRim);
+  float dark = clamp(rim * (0.55 + 0.6 * (1.0 - lam)), 0.0, 1.0);
+  vec3 pig = mix(body, edge, dark);
+  vec3 lit = mix(body, vec3(1.0, 0.94, 0.8), 0.4);
+  pig = mix(pig, lit, clamp(lam, 0.0, 1.0) * 0.35 * (1.0 - rim));
+
+  float density = 1.0 - 0.8 * smoothstep(uMist * 0.25, uMist, d);
+  if (uHalo > 0.0) {
+    // mist rising off the ridges in front: distance to the envelope of all front layers,
+    // sampled sideways so steep peaks get a halo around them, not a column above them
+    int W = textureSize(uData, 0).x;
+    float best = 1e4, bestH = 0.0;
+    for (int j = -6; j <= 6; j++) {
+      float dx = float(j) * uHalo * 0.5;
+      int xi = clamp(int(gl_FragCoord.x + dx * uScale), 0, W - 1);
+      float e = texelFetch(uData, ivec2(xi, L + 24), 0).x;
+      if (e < -1e3) continue;
+      float dd = length(vec2(dx, max(p.y - e, 0.0)));
+      if (dd < best) { best = dd; bestH = e; }
+    }
+    if (best < 1e3) density *= 1.0 - 0.92 * exp(-best / uHalo) * smoothstep(0.0, uHalo * 3.0, bestH);
+  }
+  density = max(density, 0.9 * smoothstep(2.2, 0.0, d)); // pencil contour
+  // contour space: arc length of the foot point on the ridge, and depth below it
+  float n = sqrt(1.0 + s * s);
+  vec2 uv = vec2(arc + (p.y - H) * s / n, d);
+  vec3 wash = mix(vec3(1.0), mix(body, edge, dark * 0.5), 0.4);
+  return paint(mix(PAPER, MIST, 0.6), p, uv, pig, wash, density, float(L) * 1.37 + 1.0);
+}
+
+void main() {
+  vec2 p = gl_FragCoord.xy / uScale;
+  int ix = int(gl_FragCoord.x);
+  vec3 acc = vec3(0.0);
+  float accA = 0.0;
+  for (int L = 7; L >= 0; L--) {
+    vec4 g = texelFetch(uData, ivec2(ix, L), 0);
+    if (g.w < 0.5) continue;
+    float wob = (noise(vec2(p.x * 0.025, float(L) * 7.3)) - 0.5) * uWobble * 2.0
+              + (noise(p * 0.6 + float(L) * 3.1) - 0.5) * uWobble * 0.4;
+    float H = g.x + wob;
+    float dv = H - p.y;
+    float cov = clamp(dv * uScale + 0.5, 0.0, 1.0);
+    if (cov > 0.0) {
+      vec3 c = shade(p, L, H, g.y, g.z);
+      acc += (1.0 - accA) * cov * c;
+      accA += (1.0 - accA) * cov;
+      if (accA > 0.999) break;
+    }
+  }
+  vec3 col = acc + (1.0 - accA) * sky(p);
+  col *= 0.97 + 0.03 * noise(p * 0.9);
+  vec2 uv = p / vec2(1000.0, 700.0) - 0.5;
+  col *= 1.0 - 0.12 * dot(uv, uv);
+  o = vec4(col, 1.0);
+}`;
+
+  function compile(type: number, src: string) {
+    const s = gl.createShader(type)!;
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) fail(`Shader compile error:\n${gl.getShaderInfoLog(s) ?? ''}`);
+    return s;
+  }
+  const prog = gl.createProgram()!;
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+  gl.bindAttribLocation(prog, 0, 'p');
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) fail(`Shader link error:\n${gl.getProgramInfoLog(prog) ?? ''}`);
+  const U = (n: string) => gl.getUniformLocation(prog, n);
+
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+  const dataTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, dataTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  // Per layer, per device column: merged ridge height, slope and palette blended by each shape's dominance.
+  function buildData(N: number, scale: number) {
+    const data = new Float32Array(N * MAXL * 4 * 4);
+    const H = new Float32Array(N);
+    const k = style.merge;
+    const T = Math.max(k * 0.35, 3);
+    const hs: number[] = [];
+    for (let L = 0; L < MAXL; L++) {
+      const ls = shapes.filter((s) => s.layer === L);
+      if (!ls.length) continue;
+      for (let i = 0; i < N; i++) {
+        const x = (i + 0.5) / scale;
+        let h = -Infinity, hmax = -Infinity;
+        hs.length = 0;
+        for (const s of ls) {
+          const v = profile(s, x);
+          hs.push(v);
+          if (v === -Infinity) continue;
+          h = h === -Infinity ? v : smax(h, v, k);
+          if (v > hmax) hmax = v;
+        }
+        H[i] = h;
+        const o = (L * N + i) * 4;
+        if (h === -Infinity) { data[o] = -1e4; data[o + 3] = 0; continue; }
+        data[o] = h; data[o + 3] = 1;
+        let wsum = 0;
+        const e = [0, 0, 0], b = [0, 0, 0];
+        for (let j = 0; j < ls.length; j++) {
+          if (hs[j] === -Infinity) continue;
+          const w = Math.exp((hs[j] - hmax) / T);
+          const pr = PAL_RGB[ls[j].pal] ?? PAL_RGB[0];
+          for (let c = 0; c < 3; c++) { e[c] += pr.edge[c] * w; b[c] += pr.body[c] * w; }
+          wsum += w;
+        }
+        const oe = ((L + MAXL) * N + i) * 4, ob = ((L + 2 * MAXL) * N + i) * 4;
+        for (let c = 0; c < 3; c++) { data[oe + c] = e[c] / wsum; data[ob + c] = b[c] / wsum; }
+      }
+      const dx = 1 / scale;
+      let arc = 0;
+      for (let i = 0; i < N; i++) {
+        const o = (L * N + i) * 4;
+        if (!data[o + 3]) continue;
+        const okL = i > 0 && H[i - 1] !== -Infinity, okR = i < N - 1 && H[i + 1] !== -Infinity;
+        let s = 0;
+        if (okL && okR) s = (H[i + 1] - H[i - 1]) / (2 * dx);
+        else if (okR) s = (H[i + 1] - H[i]) / dx;
+        else if (okL) s = (H[i] - H[i - 1]) / dx;
+        s = Math.max(-80, Math.min(80, s));
+        data[o + 1] = s;
+        // arc length along the ridge, so pencil strokes can follow the contour
+        data[o + 2] = arc;
+        arc += Math.sqrt(1 + s * s) * dx;
+      }
+    }
+    // front envelope: for each layer, the highest ridge among the layers in front of it
+    for (let i = 0; i < N; i++) {
+      let env = -1e4;
+      for (let L = MAXL - 1; L >= 0; L--) {
+        data[((L + 3 * MAXL) * N + i) * 4] = env;
+        const o = (L * N + i) * 4;
+        if (data[o + 3]) env = Math.max(env, data[o]);
+      }
+    }
+    return data;
+  }
+
+  function draw(w = canvas.width, h = canvas.height) {
+    const scale = w / DW;
+    gl.viewport(0, 0, w, h);
+    gl.useProgram(prog);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, dataTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, MAXL * 4, 0, gl.RGBA, gl.FLOAT, buildData(w, scale));
+    gl.uniform1i(U('uData'), 0);
+    gl.uniform1f(U('uScale'), scale);
+    gl.uniform3fv(U('uSun'), sun);
+    gl.uniform1f(U('uRim'), style.rim);
+    gl.uniform1f(U('uMist'), style.mist);
+    gl.uniform1f(U('uHalo'), style.halo);
+    gl.uniform1f(U('uHatch'), style.hatch);
+    gl.uniform1f(U('uGrain'), style.grain);
+    gl.uniform1f(U('uWobble'), style.wobble);
+    gl.uniform1f(U('uLight'), style.light);
+    gl.uniform1f(U('uWash'), style.wash);
+    gl.uniform1f(U('uStroke'), style.stroke);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // Render on demand: one frame per batch of changes, nothing while idle
+  let frame = 0;
+  function schedule() {
+    if (frame) return;
+    frame = requestAnimationFrame(() => { frame = 0; draw(); drawGuides(); });
+  }
+
+  function fitStage() {
+    const r = area.getBoundingClientRect();
+    let w = r.width, h = (w * DH) / DW;
+    if (h > r.height) { h = r.height; w = (h * DW) / DH; }
+    stage.style.width = `${w}px`;
+    stage.style.height = `${h}px`;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.round(w * dpr));
+    canvas.height = Math.max(1, Math.round(h * dpr));
+    schedule();
+  }
+
+  // ---------- guides ----------
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  function svgEl(tag: string, attrs: Record<string, string | number>) {
+    const e = document.createElementNS(SVGNS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
+    return e;
+  }
+  function outlinePath(s: Shape) {
+    const pts: string[] = [];
+    const n = 48;
+    for (let i = 0; i <= n; i++) {
+      const x = s.cx - s.w + (2 * s.w * i) / n;
+      const y = Math.max(profile(s, Math.min(Math.max(x, s.cx - s.w * 0.9999), s.cx + s.w * 0.9999)), 0);
+      pts.push(`${x.toFixed(1)},${(DH - y).toFixed(1)}`);
+    }
+    return `M${pts.join('L')}`;
+  }
+  function drawGuides() {
+    guides.replaceChildren();
+    const order = shapes.map((s, i) => i).sort((a, b) => shapes[a].layer - shapes[b].layer);
+    for (const i of order) {
+      const s = shapes[i];
+      if (i === sel) guides.appendChild(svgEl('path', { d: outlinePath(s), class: 'outline sel' }));
+    }
+    for (const i of order) {
+      const s = shapes[i];
+      const c = svgEl('circle', { cx: s.cx, cy: DH - s.top, r: i === sel ? 7 : 5, class: i === sel ? 'apex sel' : 'apex' });
+      c.dataset.idx = String(i); c.dataset.kind = 'apex';
+      guides.appendChild(c);
+    }
+    if (sel >= 0) {
+      const s = shapes[sel];
+      const x = s.cx + s.w, y = DH - s.top * 0.5;
+      const d = svgEl('path', { d: `M${x} ${y - 8}L${x + 8} ${y}L${x} ${y + 8}L${x - 8} ${y}Z`, class: 'wh' });
+      d.dataset.idx = String(sel); d.dataset.kind = 'width';
+      guides.appendChild(d);
+    }
+    const sc = svgEl('circle', { cx: sun[0], cy: DH - sun[1], r: 5, class: 'apex' });
+    sc.dataset.kind = 'sun';
+    guides.appendChild(sc);
+  }
+
+  // ---------- panel ----------
+  const $ = (id: string) => document.getElementById(id) as HTMLInputElement;
+  const typeSel = document.getElementById('type') as HTMLSelectElement;
+  const swatches = document.getElementById('swatches')!;
+  PALETTES.forEach((p, i) => {
+    const b = document.createElement('button');
+    b.className = 'xh-swatch';
+    b.style.background = `linear-gradient(135deg, ${p.edge} 0 35%, ${p.body} 65%)`;
+    b.title = `${p.name} [${i + 1}]`;
+    b.setAttribute('aria-label', p.name);
+    b.addEventListener('click', () => setProp('pal', i));
+    swatches.appendChild(b);
+  });
+
+  function setProp<K extends 'type' | 'sharp' | 'layer' | 'pal'>(k: K, v: Shape[K]) {
+    (cur as any)[k] = v;
+    if (sel >= 0) (shapes[sel] as any)[k] = v;
+    syncPanel(); schedule(); save();
+  }
+
+  function syncPanel() {
+    const src = sel >= 0 ? shapes[sel] : cur;
+    typeSel.value = src.type;
+    $('sharp').value = String(src.sharp);
+    $('sharp-label').textContent = `sharpness: ${src.sharp.toFixed(2)}`;
+    $('layer').value = String(src.layer + 1);
+    $('layer-label').textContent = `layer: ${src.layer + 1}${src.layer === 0 ? ' (back)' : src.layer === MAXL - 1 ? ' (front)' : ''}`;
+    [...swatches.children].forEach((c, i) => c.classList.toggle('on', i === src.pal));
+    $('shape-sub').textContent = sel >= 0 ? `selected ${src.type} — edits apply to it` : 'settings for new shapes';
+    ($('dupBtn') as unknown as HTMLButtonElement).disabled = sel < 0;
+    ($('delBtn') as unknown as HTMLButtonElement).disabled = sel < 0;
+    document.getElementById('toolCurve')!.classList.toggle('on', cur.type === 'curve');
+    document.getElementById('toolPeak')!.classList.toggle('on', cur.type === 'peak');
+    document.getElementById('handlesBtn')!.classList.toggle('on', showGuides);
+  }
+
+  typeSel.addEventListener('change', () => setProp('type', typeSel.value as ShapeType));
+  $('sharp').addEventListener('input', () => setProp('sharp', parseFloat($('sharp').value)));
+  $('layer').addEventListener('input', () => setProp('layer', parseInt($('layer').value) - 1));
+
+  const STYLE_FMT: Record<keyof typeof style, [string, number]> = {
+    rim: ['rim', 0], mist: ['mist depth', 0], halo: ['halo', 0], merge: ['merge', 0],
+    hatch: ['hatching', 2], grain: ['paper grain', 2], wash: ['wash', 2], stroke: ['stroke size', 2], wobble: ['hand wobble', 1], light: ['light angle', 0],
+  };
+  function syncStyle() {
+    for (const k of Object.keys(STYLE_FMT) as (keyof typeof style)[]) {
+      const [name, dp] = STYLE_FMT[k];
+      if (!$(k)) continue;
+      $(k).value = String(style[k]);
+      $(`${k}-label`).textContent = `${name}: ${style[k].toFixed(dp)}`;
+    }
+  }
+  for (const k of Object.keys(STYLE_FMT) as (keyof typeof style)[]) {
+    $(k)?.addEventListener('input', () => { style[k] = parseFloat($(k).value); syncStyle(); schedule(); save(); });
+  }
+
+  function select(i: number) {
+    sel = i;
+    if (i >= 0) {
+      const s = shapes[i];
+      cur.type = s.type; cur.sharp = s.sharp; cur.layer = s.layer; cur.pal = s.pal;
+    }
+    syncPanel(); schedule();
+  }
+
+  let lastAdd = 0;
+  function addShape(x: number, y: number) {
+    if (shapes.length >= MAX_SHAPES) return;
+    const w = cur.type === 'peak' ? 45 : 140;
+    shapes.push({ type: cur.type, cx: x, top: Math.max(y, 8), w, sharp: cur.sharp, layer: cur.layer, pal: cur.pal });
+    select(shapes.length - 1);
+    lastAdd = performance.now();
+    save();
+  }
+  function removeSelected() {
+    if (sel < 0) return;
+    shapes.splice(sel, 1);
+    select(-1); save();
+  }
+  function duplicate() {
+    if (sel < 0) return;
+    const s = { ...shapes[sel], cx: shapes[sel].cx + 40 };
+    shapes.push(s);
+    select(shapes.length - 1); save();
+  }
+  function moveLayer(d: number) {
+    const src = sel >= 0 ? shapes[sel] : cur;
+    setProp('layer', Math.max(0, Math.min(MAXL - 1, src.layer + d)));
+  }
+  function setTool(t: ShapeType) {
+    cur.type = t;
+    if (sel >= 0) select(-1); else syncPanel();
+  }
+
+  $('dupBtn').addEventListener('click', duplicate);
+  $('delBtn').addEventListener('click', removeSelected);
+  document.getElementById('toolCurve')!.addEventListener('click', () => setTool('curve'));
+  document.getElementById('toolPeak')!.addEventListener('click', () => setTool('peak'));
+  function toggleGuides() { showGuides = !showGuides; overlay.classList.toggle('hide-guides', !showGuides); syncPanel(); }
+  function reset() { const s = xulScene(); shapes = s.shapes; sun = s.sun; select(-1); save(); }
+  function clear() { shapes = []; select(-1); save(); }
+  function exportPng() {
+    const W = 3000, H = 2100;
+    const prevW = canvas.width, prevH = canvas.height;
+    canvas.width = W; canvas.height = H;
+    draw(W, H);
+    canvas.toBlob((b) => {
+      if (b) {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(b);
+        a.download = 'xul-hills.png';
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      }
+      canvas.width = prevW; canvas.height = prevH;
+      schedule();
+    });
+  }
+  document.getElementById('handlesBtn')!.addEventListener('click', toggleGuides);
+  document.getElementById('resetBtn')!.addEventListener('click', reset);
+  document.getElementById('clearBtn')!.addEventListener('click', clear);
+  document.getElementById('exportBtn')!.addEventListener('click', exportPng);
+
+  window.addEventListener('keydown', (e) => {
+    const t = e.target as HTMLElement;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT')) return;
+    const k = e.key;
+    if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); removeSelected(); }
+    else if (k === 'Escape') select(-1);
+    else if (k === '[') moveLayer(-1);
+    else if (k === ']') moveLayer(1);
+    else if (k >= '1' && k <= '8') setProp('pal', parseInt(k) - 1);
+    else if (k === 'q' || k === 'Q') setTool('curve');
+    else if (k === 'w' || k === 'W') setTool('peak');
+    else if (k === 'h' || k === 'H') toggleGuides();
+    else if (k === 'r' || k === 'R') reset();
+    else if (k === 'c' || k === 'C') clear();
+    else if (k === 'e' || k === 'E') exportPng();
+    else if (k === 'd' || k === 'D') duplicate();
+  });
+
+  // ---------- pointer ----------
+  function toDesign(ev: PointerEvent | MouseEvent | WheelEvent) {
+    const r = overlay.getBoundingClientRect();
+    return { x: ((ev.clientX - r.left) / r.width) * DW, y: DH - ((ev.clientY - r.top) / r.height) * DH };
+  }
+  // Topmost shape whose own profile covers the point
+  function hit(x: number, y: number) {
+    let best = -1, bestL = -1;
+    shapes.forEach((s, i) => {
+      if (s.layer >= bestL && profile(s, x) > y) { best = i; bestL = s.layer; }
+    });
+    return best;
+  }
+
+  type Drag = { kind: 'move' | 'width' | 'sun'; idx: number; ox: number; oy: number; moved: boolean };
+  let drag: Drag | null = null;
+
+  overlay.addEventListener('pointerdown', (ev) => {
+    const p = toDesign(ev);
+    const target = ev.target as SVGElement;
+    const kind = target.dataset?.kind;
+    if (kind === 'sun') {
+      drag = { kind: 'sun', idx: -1, ox: p.x - sun[0], oy: p.y - sun[1], moved: false };
+    } else if (kind === 'width') {
+      drag = { kind: 'width', idx: sel, ox: 0, oy: 0, moved: false };
+    } else {
+      const idx = kind === 'apex' ? parseInt(target.dataset.idx!) : ev.shiftKey ? -1 : hit(p.x, p.y);
+      if (idx < 0) { addShape(p.x, p.y); return; }
+      select(idx);
+      drag = { kind: 'move', idx, ox: p.x - shapes[idx].cx, oy: p.y - shapes[idx].top, moved: false };
+    }
+    overlay.setPointerCapture(ev.pointerId);
+  });
+  overlay.addEventListener('pointermove', (ev) => {
+    if (!drag) return;
+    const p = toDesign(ev);
+    drag.moved = true;
+    if (drag.kind === 'sun') {
+      sun[0] = p.x - drag.ox; sun[1] = p.y - drag.oy;
+    } else if (drag.kind === 'width') {
+      const s = shapes[drag.idx];
+      s.w = Math.max(4, Math.abs(p.x - s.cx));
+    } else {
+      const s = shapes[drag.idx];
+      s.cx = p.x - drag.ox; s.top = Math.max(8, p.y - drag.oy);
+    }
+    schedule();
+  });
+  const endDrag = () => { if (drag?.moved) save(); drag = null; };
+  overlay.addEventListener('pointerup', endDrag);
+  overlay.addEventListener('pointercancel', endDrag);
+  overlay.addEventListener('dblclick', (ev) => {
+    const p = toDesign(ev);
+    // double-click adds a shape anywhere, even over hills — unless the first click already did
+    if ((ev.target as SVGElement).dataset?.kind || performance.now() - lastAdd < 600) return;
+    addShape(p.x, p.y);
+  });
+  overlay.addEventListener('wheel', (ev) => {
+    if (sel < 0) return;
+    ev.preventDefault();
+    const s = shapes[sel];
+    if (ev.shiftKey) setProp('sharp', Math.max(0, Math.min(1, s.sharp - Math.sign(ev.deltaY) * 0.03)));
+    else { s.w = Math.max(4, s.w * (ev.deltaY > 0 ? 0.94 : 1.06)); schedule(); save(); }
+  }, { passive: false });
+
+  // ---------- init ----------
+  if (!load()) { const s = xulScene(); shapes = s.shapes; sun = s.sun; }
+  syncStyle(); syncPanel();
+  window.addEventListener('resize', fitStage);
+  fitStage();
+</script>
