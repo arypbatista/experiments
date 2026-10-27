@@ -1,0 +1,103 @@
+---
+---
+
+<canvas id="c" style="position:fixed;inset:0;display:block;background:#ecebe6;"></canvas>
+
+<script>
+  import { loadInk, fullCanvas, fitRect, boxBlur, PAPER } from '../../lib/ink';
+
+  const COUNT = 14000;
+  const LEN = 6;             // stroke length in drawing px
+  const SPRING = 0.035;
+  const DAMP = 0.86;
+  const REPEL_RADIUS = 50;   // drawing px
+  const REPEL = 2.2;
+  const BLAST = 18;
+
+  async function main() {
+    const canvas = document.getElementById('c') as HTMLCanvasElement;
+    const { w, h, ink } = await loadInk();
+    const soft = boxBlur(ink, w, h, 3);
+
+    const hx = new Float32Array(COUNT), hy = new Float32Array(COUNT), ha = new Float32Array(COUNT);
+    const x = new Float32Array(COUNT), y = new Float32Array(COUNT);
+    const vx = new Float32Array(COUNT), vy = new Float32Array(COUNT);
+
+    // Sample homes on ink; orient each stroke along the ink (perpendicular to the gradient)
+    for (let n = 0; n < COUNT; ) {
+      const px = 1 + Math.random() * (w - 2), py = 1 + Math.random() * (h - 2);
+      const i = (py | 0) * w + (px | 0);
+      if (Math.random() > ink[i]) continue;
+      const gx = soft[i + 1] - soft[i - 1], gy = soft[i + w] - soft[i - w];
+      hx[n] = x[n] = px; hy[n] = y[n] = py;
+      ha[n] = Math.hypot(gx, gy) > 0.01 ? Math.atan2(gx, -gy) : Math.random() * Math.PI;
+      n++;
+    }
+
+    let W = 0, H = 0;
+    const ctx = fullCanvas(canvas, (nw, nh) => { W = nw; H = nh; });
+
+    let mx = -1e4, my = -1e4;
+    const toDrawing = (cx: number, cy: number) => {
+      const r = fitRect(w, h, W, H);
+      return [(cx - r.x) / r.s, (cy - r.y) / r.s];
+    };
+    window.addEventListener('pointermove', (e) => { [mx, my] = toDrawing(e.clientX, e.clientY); });
+    window.addEventListener('pointerleave', () => { mx = my = -1e4; });
+    canvas.addEventListener('pointerdown', (e) => {
+      const [bx, by] = toDrawing(e.clientX, e.clientY);
+      for (let n = 0; n < COUNT; n++) {
+        const dx = x[n] - bx, dy = y[n] - by;
+        const d = Math.hypot(dx, dy) + 1;
+        const f = BLAST * (0.4 + Math.random()) * Math.min(1, 120 / d);
+        vx[n] += (dx / d) * f; vy[n] += (dy / d) * f;
+      }
+    });
+
+    function frame(t: number) {
+      for (let n = 0; n < COUNT; n++) {
+        vx[n] += (hx[n] - x[n]) * SPRING;
+        vy[n] += (hy[n] - y[n]) * SPRING;
+        const dx = x[n] - mx, dy = y[n] - my;
+        const d = Math.hypot(dx, dy);
+        if (d < REPEL_RADIUS && d > 0) {
+          const f = (1 - d / REPEL_RADIUS) * REPEL;
+          vx[n] += (dx / d) * f; vy[n] += (dy / d) * f;
+        }
+        vx[n] *= DAMP; vy[n] *= DAMP;
+        x[n] += vx[n]; y[n] += vy[n];
+      }
+
+      const r = fitRect(w, h, W, H);
+      ctx.fillStyle = PAPER;
+      ctx.fillRect(0, 0, W, H);
+      ctx.save();
+      ctx.translate(r.x, r.y);
+      ctx.scale(r.s, r.s);
+      ctx.strokeStyle = 'rgba(20,19,18,0.8)';
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      for (let n = 0; n < COUNT; n++) {
+        // fast strokes turn toward their motion, plus a faint idle wobble
+        const sp = Math.hypot(vx[n], vy[n]);
+        const k = Math.min(1, sp / 3);
+        let a = ha[n] + Math.sin(t * 0.001 + n) * 0.08;
+        if (k > 0.01) {
+          const va = Math.atan2(vy[n], vx[n]);
+          a += Math.atan2(Math.sin(va - a), Math.cos(va - a)) * k;
+        }
+        const l = LEN * (1 + k);
+        const cx = Math.cos(a) * l * 0.5, cy = Math.sin(a) * l * 0.5;
+        ctx.moveTo(x[n] - cx, y[n] - cy);
+        ctx.lineTo(x[n] + cx, y[n] + cy);
+      }
+      ctx.stroke();
+      ctx.restore();
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  main();
+</script>
