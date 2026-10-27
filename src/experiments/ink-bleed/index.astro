@@ -1,0 +1,364 @@
+---
+// autonomous motions of the bath: [id, label, default on, default strength]
+const motions: [string, string, boolean, number][] = [
+  ['current', 'current', true, 0.2],
+  ['eddies', 'eddies', false, 0.5],
+  ['breeze', 'breeze', false, 0.5],
+  ['rain', 'rain', false, 0.5],
+  ['needle', 'phantom needle', false, 0.5],
+];
+---
+
+<canvas id="bath" style="position:fixed;inset:0;display:block;background:#ecebe6;cursor:crosshair;touch-action:none;"></canvas>
+
+<!-- printed sheets, newest first -->
+<div id="prints" style="position:fixed;top:64px;left:24px;display:flex;flex-direction:column;gap:10px;"></div>
+
+<!-- enlarged print viewer -->
+<div id="viewer" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(236,235,230,0.82);z-index:50;cursor:zoom-out;"></div>
+
+<div
+  id="controls"
+  style="position:fixed;top:56px;right:14px;padding:8px 10px;background:rgba(236,235,230,0.8);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);font-family:monospace;font-size:11px;color:rgba(20,19,18,0.7);display:flex;flex-direction:column;gap:8px;min-width:190px;"
+>
+  <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:2px;">
+    <span style="font-size:12px;color:rgba(20,19,18,0.9);letter-spacing:0.06em;">SUMINAGASHI</span>
+    <span style="font-size:10px;color:rgba(20,19,18,0.45);line-height:1.4;">the drawing floats on water.<br />every gesture is permanent until printed.</span>
+  </div>
+
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span>tool [C]</span>
+    <select id="tool-select" style="background:#ecebe6;border:1px solid rgba(20,19,18,0.3);color:rgba(20,19,18,0.8);font-family:monospace;font-size:11px;padding:4px 6px;cursor:pointer;width:100%;">
+      <option value="stylus" selected>stylus — one needle</option>
+      <option value="comb">comb — row of tines</option>
+    </select>
+  </label>
+
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span>drop [D]</span>
+    <select id="drop-select" style="background:#ecebe6;border:1px solid rgba(20,19,18,0.3);color:rgba(20,19,18,0.8);font-family:monospace;font-size:11px;padding:4px 6px;cursor:pointer;width:100%;">
+      <option value="water" selected>water — clears a ring</option>
+      <option value="ink">sumi — adds ink</option>
+      <option value="alternate">alternate — rings</option>
+    </select>
+  </label>
+
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="drag-label">drag: 14</span>
+    <input id="drag-range" type="range" min="4" max="40" step="1" value="14" style="accent-color:#141312;width:100%;" />
+  </label>
+
+  <div style="display:flex;flex-direction:column;gap:2px;margin:8px 0 2px;">
+    <span id="motion-title" style="font-size:12px;color:rgba(20,19,18,0.9);letter-spacing:0.06em;">MOTION</span>
+    <span style="font-size:10px;color:rgba(20,19,18,0.45);line-height:1.4;">the water keeps moving on its own.<br />[SPACE] pauses it.</span>
+  </div>
+  {motions.map(([id, label, on, value]) => (
+    <div style="display:flex;flex-direction:column;gap:3px;">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id={`m-${id}`} data-motion={id} checked={on} style="accent-color:#141312;margin:0;" />
+        <span id={`m-${id}-label`} data-name={label}>{label}: {value.toFixed(2)}</span>
+      </label>
+      <input type="range" id={`m-${id}-range`} data-motion={id} min="0" max="1" step="0.01" value={value} style="accent-color:#141312;width:100%;" />
+    </div>
+  ))}
+</div>
+
+<div style="position:fixed;bottom:24px;right:24px;display:flex;gap:8px;">
+  <button
+    id="print-btn"
+    style="background:transparent;border:1px solid rgba(150,40,30,0.55);color:rgba(150,40,30,0.85);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >PRINT [P]</button>
+  <button
+    id="refloat-btn"
+    style="background:transparent;border:1px solid rgba(20,19,18,0.4);color:rgba(20,19,18,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >REFLOAT [R]</button>
+</div>
+
+<style is:global>
+  .fi-sheet {
+    position: fixed;
+    z-index: 40;
+    perspective: 1600px;
+    pointer-events: none;
+  }
+  .fi-sheet-inner {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    transform-style: preserve-3d;
+  }
+  .fi-sheet-face {
+    position: absolute;
+    inset: 0;
+    backface-visibility: hidden;
+    box-shadow: 0 6px 24px rgba(20, 19, 18, 0.18);
+  }
+  .fi-sheet-face canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  .fi-print-card {
+    display: block;
+    width: 64px;
+    cursor: zoom-in;
+    box-shadow: 0 2px 8px rgba(20, 19, 18, 0.18);
+    transition: transform 0.2s;
+  }
+  .fi-print-card:hover {
+    transform: translateX(4px);
+  }
+</style>
+
+<script>
+  import { loadImage, fitRect, rng, PAPER_RGB, INK_RGB } from '../../lib/ink';
+  import { createBath } from './bath';
+  import { makePrint, PRINT_PAPER } from './print';
+  import { createMotion, MOTIONS } from './motion';
+
+  const canvas = document.getElementById('bath') as HTMLCanvasElement;
+  const toolSelect = document.getElementById('tool-select') as HTMLSelectElement;
+  const dropSelect = document.getElementById('drop-select') as HTMLSelectElement;
+  const dragRange = document.getElementById('drag-range') as HTMLInputElement;
+  const dragLabel = document.getElementById('drag-label')!;
+  const printsEl = document.getElementById('prints')!;
+  const viewer = document.getElementById('viewer')!;
+
+  // ── Interaction constants ────────────────────────────────────────────────
+  const HOLD_MS = 160;        // stillness before a held pointer starts a drop
+  const DROP_RATE = 70000;    // px² of new surface per second while a drop grows
+  const DROP_MAX_R = 210;     // drops stop growing at this radius
+  const DROP_SLOP = 6;        // px of hand jitter tolerated while a drop grows
+  const STEP = 3;             // stylus path is applied in segments of this length
+  const COMB_TINES = 9;
+  const COMB_GAP = 34;        // px between comb tines
+  const SUMI = 0.9;           // density of a sumi drop
+  const LIFT = 0.27;          // fraction of floating ink left after a print
+  const MAX_PRINTS = 5;
+
+  async function main() {
+    const img = await loadImage();
+    const W0 = window.innerWidth, H0 = window.innerHeight;
+    const fit = fitRect(img.width, img.height, W0, H0, 0.8);
+    // drawing rect in "drawing space" (CSS px, y up) — fixed for the session
+    const rect = { x: fit.x, y: H0 - fit.y - fit.h, w: fit.w, h: fit.h };
+
+    const bath = createBath(canvas, img, rect, PAPER_RGB, INK_RGB);
+    if (!bath) {
+      canvas.insertAdjacentHTML('afterend', '<p style="position:fixed;top:50%;width:100%;text-align:center;font-family:monospace;color:#555">WebGL2 with float render targets is required.</p>');
+      return;
+    }
+
+    // ── Pointer: move = drag a needle, hold still = a drop blooms ──────────
+    let down = false;
+    let last = { x: 0, y: 0 };
+    let lastMove = 0;
+    let drop: { x: number; y: number; r: number; ink: number } | null = null;
+    let alternateInk = false;
+    let busy = false; // a print is being pulled
+
+    const toBath = (e: PointerEvent) => ({ x: e.clientX, y: window.innerHeight - e.clientY });
+
+    canvas.addEventListener('pointerdown', (e) => {
+      if (busy) return;
+      try { canvas.setPointerCapture(e.pointerId); } catch { /* synthetic or stale pointer */ }
+      down = true;
+      last = toBath(e);
+      lastMove = performance.now();
+      drop = null;
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (!down) return;
+      const p = toBath(e);
+      if (drop && Math.hypot(p.x - drop.x, p.y - drop.y) < DROP_SLOP) return;
+      drop = null;
+      const dx = p.x - last.x, dy = p.y - last.y;
+      const L = Math.hypot(dx, dy);
+      if (L < 0.5) return;
+      const n = Math.ceil(L / STEP);
+      const comb = toolSelect.value === 'comb';
+      for (let i = 0; i < n; i++) {
+        bath.stroke(
+          last.x + (dx * i) / n, last.y + (dy * i) / n,
+          last.x + (dx * (i + 1)) / n, last.y + (dy * (i + 1)) / n,
+          parseFloat(dragRange.value), comb ? COMB_TINES : 1, COMB_GAP,
+        );
+      }
+      last = p;
+      lastMove = performance.now();
+    });
+
+    const release = () => { down = false; drop = null; };
+    canvas.addEventListener('pointerup', release);
+    canvas.addEventListener('pointercancel', release);
+
+    function nextDropInk() {
+      const mode = dropSelect.value;
+      if (mode === 'ink') return SUMI;
+      if (mode === 'water') return 0;
+      alternateInk = !alternateInk;
+      return alternateInk ? SUMI : 0;
+    }
+
+    let lastGrow = performance.now();
+    function growDrop() {
+      const now = performance.now();
+      const dt = Math.min(0.05, (now - lastGrow) / 1000);
+      lastGrow = now;
+      if (!down || busy) return;
+      if (!drop) {
+        if (now - lastMove < HOLD_MS) return;
+        drop = { x: last.x, y: last.y, r: 0, ink: nextDropInk() };
+      }
+      if (drop.r >= DROP_MAX_R) return;
+      // a drop of area A then one of area B at the same center equals one drop
+      // of area A+B, so growth is a sequence of small exact drops
+      const r2 = drop.r * drop.r + (DROP_RATE * dt) / Math.PI;
+      const dr = Math.sqrt(r2 - drop.r * drop.r);
+      bath.drop(drop.x, drop.y, dr, drop.ink);
+      drop.r = Math.sqrt(r2);
+    }
+
+    // ── Motion: the water's own movement ───────────────────────────────────
+    const motion = createMotion(
+      bath,
+      () => { const o = bath.offset(); return { x: rect.x + o.x, y: rect.y + o.y, w: rect.w, h: rect.h }; },
+      () => ({ w: window.innerWidth, h: window.innerHeight }),
+      nextDropInk,
+    );
+    let paused = false;
+    const motionTitle = document.getElementById('motion-title')!;
+    for (const name of MOTIONS) {
+      const box = document.getElementById(`m-${name}`) as HTMLInputElement;
+      const range = document.getElementById(`m-${name}-range`) as HTMLInputElement;
+      const label = document.getElementById(`m-${name}-label`)!;
+      const sync = () => {
+        motion.strength[name] = parseFloat(range.value);
+        label.textContent = `${label.dataset.name}: ${motion.strength[name].toFixed(2)}`;
+        motion.set(name, box.checked);
+      };
+      box.addEventListener('change', () => { sync(); box.blur(); });
+      range.addEventListener('input', sync);
+      sync();
+    }
+    function togglePause() {
+      paused = !paused;
+      motionTitle.textContent = paused ? 'MOTION — PAUSED' : 'MOTION';
+      if (!paused) motion.resume();
+    }
+
+    // ── Print: lay a sheet, lift it, turn it over ──────────────────────────
+    function pullPrint() {
+      if (busy) return;
+      busy = true;
+      down = false;
+      drop = null;
+
+      const W = window.innerWidth, H = window.innerHeight;
+      const off = bath.offset();
+      // sheet = drawing rect plus margin, in screen CSS px (y down)
+      const mx = rect.w * 0.16, my = rect.h * 0.08;
+      let sx = rect.x + off.x - mx, sw = rect.w + mx * 2;
+      let syUp = rect.y + off.y - my, sh = rect.h + my * 2;
+      sx = Math.max(8, sx); sw = Math.min(W - 16, sw);
+      let sy = H - (syUp + sh);
+      sy = Math.max(8, sy); sh = Math.min(H - 16, sh);
+
+      const snap = bath.capture(sx, sy, sw, sh);
+      const printCanvas = makePrint(snap, rng((Math.random() * 1e9) | 0));
+
+      const sheet = document.createElement('div');
+      sheet.className = 'fi-sheet';
+      Object.assign(sheet.style, { left: sx + 'px', top: sy + 'px', width: sw + 'px', height: sh + 'px', opacity: '0', transition: 'opacity 0.6s ease' });
+      const inner = document.createElement('div');
+      inner.className = 'fi-sheet-inner';
+      const back = document.createElement('div');
+      back.className = 'fi-sheet-face';
+      back.style.background = PRINT_PAPER;
+      const front = document.createElement('div');
+      front.className = 'fi-sheet-face';
+      front.style.transform = 'rotateY(180deg)';
+      front.appendChild(printCanvas);
+      inner.append(back, front);
+      sheet.appendChild(inner);
+      document.body.appendChild(sheet);
+
+      requestAnimationFrame(() => { sheet.style.opacity = '1'; });
+      // sheet lies on the water: the paper drinks most of the floating ink
+      setTimeout(() => bath.lift(LIFT), 900);
+      // lift and turn over (horizontal flip = the print is a mirror image)
+      setTimeout(() => {
+        inner.style.transition = 'transform 1.1s cubic-bezier(.5,0,.3,1)';
+        inner.style.transform = 'translateY(-12px) rotateY(180deg)';
+      }, 1300);
+      // file it in the stack on the left
+      setTimeout(() => {
+        const card = document.createElement('canvas');
+        card.width = printCanvas.width; card.height = printCanvas.height;
+        card.getContext('2d')!.drawImage(printCanvas, 0, 0);
+        card.className = 'fi-print-card';
+        card.style.visibility = 'hidden';
+        card.addEventListener('click', () => openViewer(printCanvas));
+        printsEl.prepend(card);
+        while (printsEl.children.length > MAX_PRINTS) printsEl.lastElementChild!.remove();
+        const target = card.getBoundingClientRect();
+        sheet.style.transition = 'left 0.8s cubic-bezier(.5,0,.2,1), top 0.8s cubic-bezier(.5,0,.2,1), width 0.8s cubic-bezier(.5,0,.2,1), height 0.8s cubic-bezier(.5,0,.2,1)';
+        inner.style.transition = 'transform 0.8s';
+        inner.style.transform = 'rotateY(180deg)';
+        Object.assign(sheet.style, { left: target.left + 'px', top: target.top + 'px', width: target.width + 'px', height: target.height + 'px' });
+        setTimeout(() => {
+          card.style.visibility = 'visible';
+          sheet.remove();
+          busy = false;
+        }, 850);
+      }, 3300);
+    }
+
+    function openViewer(c: HTMLCanvasElement) {
+      viewer.innerHTML = '';
+      const big = document.createElement('canvas');
+      big.width = c.width; big.height = c.height;
+      big.getContext('2d')!.drawImage(c, 0, 0);
+      Object.assign(big.style, { maxWidth: '86vw', maxHeight: '86vh', boxShadow: '0 10px 40px rgba(20,19,18,0.25)' });
+      viewer.appendChild(big);
+      viewer.style.display = 'flex';
+    }
+    viewer.addEventListener('click', () => { viewer.style.display = 'none'; });
+
+    // ── Controls ───────────────────────────────────────────────────────────
+    dragRange.addEventListener('input', () => { dragLabel.textContent = `drag: ${dragRange.value}`; });
+    document.getElementById('print-btn')!.addEventListener('click', pullPrint);
+    document.getElementById('refloat-btn')!.addEventListener('click', () => { if (!busy) bath.reset(); });
+    window.addEventListener('keydown', (e) => {
+      const t = e.target as HTMLElement;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
+      const k = e.key.toLowerCase();
+      if (k === 'p') pullPrint();
+      else if (k === 'r' && !busy) bath.reset();
+      else if (k === 'c') toolSelect.value = toolSelect.value === 'comb' ? 'stylus' : 'comb';
+      else if (k === 'd') dropSelect.selectedIndex = (dropSelect.selectedIndex + 1) % dropSelect.options.length;
+      else if (k === 'escape') viewer.style.display = 'none';
+      else if (e.code === 'Space') { e.preventDefault(); togglePause(); }
+    });
+
+    if (window.matchMedia('(pointer: coarse)').matches) {
+      (document.getElementById('controls') as HTMLElement).style.display = 'none';
+    }
+
+    let lastFrame = performance.now();
+    function frame(now: number) {
+      const t = performance.now();
+      const dt = Math.min(0.05, (t - lastFrame) / 1000);
+      lastFrame = t;
+      growDrop();
+      // the sheet lying on the water holds the surface still
+      if (!paused && !busy) motion.step(dt);
+      bath.render(now / 1000);
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  main();
+</script>
