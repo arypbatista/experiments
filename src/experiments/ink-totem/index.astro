@@ -1,0 +1,161 @@
+---
+---
+
+<canvas id="c" style="position:fixed;inset:0;display:block;background:#ecebe6;touch-action:none;cursor:pointer;"></canvas>
+
+<div style="position:fixed;bottom:24px;right:24px;display:flex;gap:8px;">
+  <button
+    id="pause-btn"
+    style="background:transparent;border:1px solid rgba(0,0,0,0.4);color:rgba(0,0,0,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >PAUSE [SPACE]</button>
+  <button
+    id="new-btn"
+    style="background:transparent;border:1px solid rgba(0,0,0,0.4);color:rgba(0,0,0,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >NEW TOTEM [N]</button>
+</div>
+
+<script>
+  import { loadImage, fullCanvas, PAPER } from '../../lib/ink';
+  import { Totem, COL_W } from './totem';
+
+  const AUTO_SPEED = 0.45;    // screen px per frame, upward (the totem keeps growing)
+  const FADE_MS = 450;        // crossfade when a unit is re-carved / appears
+  const BACK = [              // distant totems: x as fraction of W, scale & parallax relative to front
+    { x: 0.14, s: 0.46, par: 0.46, alpha: 0.1, seed: 77 },
+    { x: 0.86, s: 0.4, par: 0.4, alpha: 0.08, seed: 191 },
+  ];
+
+  async function main() {
+    const canvas = document.getElementById('c') as HTMLCanvasElement;
+    const img = await loadImage();
+
+    let seed = 4128;
+    let front: Totem, backs: Totem[];
+    function build() {
+      front = new Totem(img, seed);
+      backs = BACK.map((b) => new Totem(img, seed * 31 + b.seed));
+    }
+    build();
+
+    let W = 0, H = 0, sc = 1;
+    const ctx = fullCanvas(canvas, (nw, nh) => {
+      W = nw; H = nh;
+      sc = Math.min((W * 0.86) / 640, H / 720, 1.45);
+    });
+
+    // Paper grain: small noise tile, scrolled with the sheet so it reads as one paper
+    const grain = document.createElement('canvas');
+    grain.width = grain.height = 192;
+    {
+      const g = grain.getContext('2d')!;
+      const im = g.createImageData(192, 192);
+      const r = Math.random;
+      for (let i = 0; i < 192 * 192; i++) {
+        const v = r();
+        im.data[i * 4] = im.data[i * 4 + 1] = im.data[i * 4 + 2] = v < 0.5 ? 120 : 255;
+        im.data[i * 4 + 3] = Math.round(r() * 14);
+      }
+      g.putImageData(im, 0, 0);
+    }
+    const grainPat = ctx.createPattern(grain, 'repeat')!;
+
+    let camY = -200;        // world y at screen center (front totem)
+    let vel = -AUTO_SPEED;  // screen px per frame (negative = up)
+    let paused = false;
+
+    window.addEventListener('wheel', (e) => { vel += e.deltaY * 0.04; }, { passive: true });
+    let dragY: number | null = null, downX = 0, downY = 0, moved = 0;
+    canvas.addEventListener('pointerdown', (e) => {
+      dragY = downY = e.clientY; downX = e.clientX; moved = 0;
+    });
+    window.addEventListener('pointermove', (e) => {
+      if (dragY === null) return;
+      vel = dragY - e.clientY;
+      moved += Math.abs(vel);
+      dragY = e.clientY;
+    });
+    window.addEventListener('pointerup', (e) => {
+      if (dragY !== null && moved < 6) recarve(downX, downY);
+      dragY = null;
+    });
+
+    function frontView(): [number, number] {
+      return front.range(camY - H / 2 / sc, camY + H / 2 / sc);
+    }
+
+    function recarve(sx: number, sy: number) {
+      const x = (sx - W / 2) / sc + COL_W / 2;
+      const y = camY + (sy - H / 2) / sc;
+      const [a, b] = frontView();
+      const k = front.unitAt(x, y, a, b);
+      if (k !== null) front.reroll(k, performance.now());
+    }
+
+    const pauseBtn = document.getElementById('pause-btn')!;
+    function togglePause() {
+      paused = !paused;
+      pauseBtn.textContent = paused ? 'GROW [SPACE]' : 'PAUSE [SPACE]';
+    }
+    function newTotem() { seed = (Math.random() * 1e6) | 0; build(); }
+    pauseBtn.addEventListener('click', togglePause);
+    document.getElementById('new-btn')!.addEventListener('click', newTotem);
+    window.addEventListener('keydown', (e) => {
+      if ((e.target as HTMLElement)?.closest('input,select,textarea')) return;
+      if (e.key === ' ') { e.preventDefault(); togglePause(); }
+      if (e.key === 'n' || e.key === 'N') newTotem();
+    });
+
+    function drawColumn(t: Totem, cx: number, cy: number, s: number, alpha: number, now: number, born: number) {
+      const [a, b] = t.range(cy - H / 2 / s, cy + H / 2 / s);
+      const left = cx - (COL_W / 2) * s;
+      for (let k = a; k <= b; k++) {
+        const tile = t.tile(k, born);
+        const y = H / 2 + (t.y0.get(k)! - cy) * s;
+        const u = t.units.get(k)!;
+        ctx.globalAlpha = alpha * Math.min(1, (now - tile.born) / FADE_MS);
+        ctx.drawImage(tile.canvas, left, y, COL_W * s, u.H * s);
+      }
+      for (let i = t.fading.length - 1; i >= 0; i--) {
+        const f = t.fading[i];
+        const p = (now - f.born) / FADE_MS;
+        if (p >= 1 || !t.units.has(f.k)) { t.fading.splice(i, 1); continue; }
+        ctx.globalAlpha = alpha * (1 - p);
+        const y = H / 2 + (t.y0.get(f.k)! - cy) * s;
+        ctx.drawImage(f.canvas, left, y, COL_W * s, f.canvas.height * s);
+      }
+      ctx.globalAlpha = 1;
+      t.trim(a, b);
+    }
+
+    let first = true;
+    function frame(now: number) {
+      if (dragY === null) {
+        const target = paused ? 0 : -AUTO_SPEED;
+        vel += (target - vel) * 0.03;
+      }
+      camY += vel / sc;
+      if (dragY !== null) vel *= 0.5;
+
+      ctx.fillStyle = PAPER;
+      ctx.fillRect(0, 0, W, H);
+      ctx.save();
+      const gy = -((camY * sc) % 192);
+      ctx.translate(0, gy);
+      ctx.fillStyle = grainPat;
+      ctx.fillRect(0, -192, W, H + 384);
+      ctx.restore();
+
+      // tiles born on the first frame appear immediately
+      const t0 = first ? -1e9 : now;
+      if (W / H > 1.1) {
+        BACK.forEach((b, i) => drawColumn(backs[i], W * b.x, camY * b.par + 300 * i, sc * b.s, b.alpha, now, t0));
+      }
+      drawColumn(front, W / 2, camY, sc, 1, now, t0);
+      first = false;
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  main();
+</script>
