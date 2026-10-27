@@ -50,13 +50,13 @@
 <!-- Popup backdrop -->
 <div id="popup-backdrop" style="
   display:none;position:fixed;inset:0;
-  background:rgba(0,0,0,0.75);z-index:10000;
+  background:rgba(0,0,0,0.75);z-index:9000;
 "></div>
 
 <!-- Popup -->
 <div id="popup" style="
   display:none;position:fixed;top:50%;left:50%;
-  transform:translate(-50%,-50%);z-index:10001;
+  transform:translate(-50%,-50%);z-index:9001;
   width:min(460px,88vw);
   background:#131313;border:1px solid rgba(255,255,255,0.1);
   border-radius:12px;overflow:hidden;
@@ -364,6 +364,13 @@
 
     document.getElementById('popup-close')!.addEventListener('click', hidePopup);
     backdrop.addEventListener('click', hidePopup);
+
+    // ── Keyboard ───────────────────────────────────────────────────────────────
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowLeft')  goDir(-1);
+      if (e.key === 'ArrowRight') goDir(1);
+      if (e.key === 'Escape' && popupOpen) hidePopup();
+    });
 
     document.getElementById('popup-close')!.addEventListener('mouseenter', (e) => {
       (e.target as HTMLElement).style.color = '#aaa';
