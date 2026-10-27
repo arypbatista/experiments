@@ -1,0 +1,190 @@
+---
+---
+
+<canvas id="c" style="position:fixed;inset:0;display:block;width:100%;height:100%;touch-action:none;"></canvas>
+
+<div
+  id="controls"
+  style="position:fixed;top:64px;right:24px;font-family:monospace;font-size:11px;color:rgba(255,255,255,0.7);display:flex;flex-direction:column;gap:8px;min-width:200px;max-width:220px;"
+>
+  <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:2px;">
+    <span style="font-size:12px;color:rgba(255,255,255,0.9);letter-spacing:0.06em;">RELIEF</span>
+    <span id="mode-desc" style="font-size:10px;color:rgba(255,255,255,0.4);line-height:1.4;"></span>
+  </div>
+  <select
+    id="mode-select"
+    style="background:#000;border:1px solid rgba(255,255,255,0.3);color:rgba(255,255,255,0.8);font-family:monospace;font-size:11px;padding:4px 6px;cursor:pointer;width:100%;"
+  >
+    <option value="emboss">[1] Blind emboss</option>
+    <option value="lacquer">[2] Black lacquer</option>
+    <option value="pins">[3] Pinscreen</option>
+  </select>
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="height-label">light height: 0.30</span>
+    <input id="height-range" type="range" min="0" max="1" step="0.01" value="0.3" style="accent-color:white;width:100%;" />
+  </label>
+</div>
+
+<script>
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import { loadInk } from '../../lib/ink';
+  import { buildHeightTexture, createReliefMaterial } from './relief';
+  import { createPinScene } from './pins';
+
+  type Mode = 'emboss' | 'lacquer' | 'pins';
+  const MODES: Mode[] = ['emboss', 'lacquer', 'pins'];
+  const DESC: Record<Mode, string> = {
+    emboss: 'white on white: the lines pressed up into the paper, visible only by raking light',
+    lacquer: 'the strokes laid on thick in glossy black paint, wet edges catching the studio light',
+    pins: 'a pin-art board: every pin pushed out by the ink under it',
+  };
+  const TILT = THREE.MathUtils.degToRad(11); // relief camera looks at the sheet slightly from below
+  const FOLLOW = 7;                           // light follow rate (1/s)
+
+  const coarse = window.matchMedia('(pointer: coarse)').matches;
+
+  async function main() {
+    const canvas = document.getElementById('c') as HTMLCanvasElement;
+    const inkMap = await loadInk(1);
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+
+    // ---------- relief (emboss / lacquer) ----------
+    const { tex, SW, SH } = buildHeightTexture(inkMap);
+    const reliefMat = createReliefMaterial(tex, SW, SH);
+    const reliefScene = new THREE.Scene();
+    reliefScene.add(new THREE.Mesh(new THREE.PlaneGeometry(8000, 8000), reliefMat));
+    const reliefCam = new THREE.PerspectiveCamera(26, 1, 10, 20000);
+
+    // ---------- pinscreen ----------
+    const pinsWorld = createPinScene(renderer, inkMap);
+    const pinCam = new THREE.PerspectiveCamera(32, 1, 10, 20000);
+    const controls = new OrbitControls(pinCam, canvas);
+    controls.enableDamping = true;
+    controls.minPolarAngle = Math.PI * 0.5;   // keep the camera in front of the board
+    controls.maxPolarAngle = Math.PI * 0.98;
+    controls.minAzimuthAngle = -1.0;
+    controls.maxAzimuthAngle = 1.0;
+
+    const fitDist = (w: number, h: number, fov: number, aspect: number) => {
+      const t = Math.tan(THREE.MathUtils.degToRad(fov) / 2);
+      return Math.max(h / 2 / t, w / 2 / (t * aspect));
+    };
+    function layout() {
+      const W = window.innerWidth, H = window.innerHeight, a = W / H;
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, mode === 'pins' ? 2 : 1.5));
+      renderer.setSize(W, H, false);
+      reliefCam.aspect = pinCam.aspect = a;
+      const d = fitDist(SW * 1.25, SH * 1.16, reliefCam.fov, a);
+      reliefCam.position.set(0, -d * Math.sin(TILT), d * Math.cos(TILT));
+      reliefCam.lookAt(0, 0, 0);
+      reliefCam.updateProjectionMatrix();
+      pinCam.updateProjectionMatrix();
+    }
+    function resetPinCam() {
+      const d = fitDist(pinsWorld.size.w * 1.2, pinsWorld.size.h * 1.12, pinCam.fov, window.innerWidth / window.innerHeight);
+      const tilt = THREE.MathUtils.degToRad(28);
+      pinCam.position.set(-d * 0.3, -d * Math.sin(tilt), d * Math.cos(tilt));
+      controls.target.set(0, 0, 0);
+      controls.update();
+    }
+
+    // ---------- light following the pointer ----------
+    const ray = new THREE.Raycaster();
+    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+    const ndc = new THREE.Vector2();
+    const hit = new THREE.Vector3();
+    const lightTarget = new THREE.Vector2(-320, 470);
+    const light = lightTarget.clone();
+    let pointerActive = false, dragging = false;
+
+    function pointerToBoard(e: PointerEvent) {
+      ndc.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
+      ray.setFromCamera(ndc, mode === 'pins' ? pinCam : reliefCam);
+      if (ray.ray.intersectPlane(plane, hit)) {
+        lightTarget.set(THREE.MathUtils.clamp(hit.x, -900, 900), THREE.MathUtils.clamp(hit.y, -1100, 1100));
+        pointerActive = true;
+      }
+    }
+    canvas.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      if (mode !== 'pins') pointerToBoard(e);
+    });
+    window.addEventListener('pointerup', () => (dragging = false));
+    window.addEventListener('pointermove', (e) => {
+      if (e.target !== canvas) return;
+      if (mode === 'pins' && (dragging || e.pointerType === 'touch')) return; // orbiting
+      if (e.pointerType === 'touch' && !dragging) return;
+      pointerToBoard(e);
+    });
+
+    // ---------- UI ----------
+    const select = document.getElementById('mode-select') as HTMLSelectElement;
+    const desc = document.getElementById('mode-desc')!;
+    const heightRange = document.getElementById('height-range') as HTMLInputElement;
+    const heightLabel = document.getElementById('height-label')!;
+    let lightHeight = parseFloat(heightRange.value);
+    heightRange.addEventListener('input', () => {
+      lightHeight = parseFloat(heightRange.value);
+      heightLabel.textContent = `light height: ${lightHeight.toFixed(2)}`;
+    });
+
+    const fromHash = location.hash.slice(1) as Mode;
+    let mode: Mode = MODES.includes(fromHash) ? fromHash : 'emboss';
+    function setMode(m: Mode) {
+      mode = m;
+      select.value = m;
+      desc.textContent = DESC[m];
+      controls.enabled = m === 'pins';
+      reliefMat.uniforms.uMode.value = m === 'lacquer' ? 1 : 0;
+      reliefMat.uniforms.uPower.value = m === 'lacquer' ? 3.4 : 2.6;
+      if (m === 'pins') { resetPinCam(); pinsWorld.replay(); }
+      history.replaceState(null, '', `#${m}`);
+      layout();
+    }
+    select.addEventListener('change', () => setMode(select.value as Mode));
+    window.addEventListener('keydown', (e) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      const i = ['1', '2', '3'].indexOf(e.key);
+      if (i >= 0) setMode(MODES[i]);
+    });
+    if (coarse) (document.getElementById('controls') as HTMLElement).style.transform = 'scale(0.9)';
+    (document.getElementById('controls') as HTMLElement).style.transformOrigin = 'top right';
+
+    window.addEventListener('resize', () => { layout(); if (mode === 'pins') resetPinCam(); });
+    setMode(mode);
+
+    let last = performance.now(), time = 0;
+    renderer.setAnimationLoop(() => {
+      const now = performance.now();
+      const dt = Math.min((now - last) / 1000, 0.05);
+      last = now;
+      time += dt;
+      if (!pointerActive) {
+        // idle: the lamp drifts around the upper-left corner
+        const a = 2.25 + Math.sin(time * 0.25) * 0.5;
+        lightTarget.set(Math.cos(a) * 560, Math.sin(a) * 640);
+      }
+      light.lerp(lightTarget, 1 - Math.exp(-dt * FOLLOW));
+
+      if (mode === 'pins') {
+        pinsWorld.update(now / 1000);
+        pinsWorld.setLight(light.x, light.y, 80 + lightHeight * 700);
+        controls.update();
+        renderer.render(pinsWorld.scene, pinCam);
+      } else {
+        reliefMat.uniforms.uLight.value.set(light.x, light.y, 25 + lightHeight * 400);
+        reliefMat.uniforms.uTime.value = time;
+        renderer.render(reliefScene, reliefCam);
+      }
+    });
+  }
+
+  main();
+</script>
