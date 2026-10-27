@@ -96,6 +96,7 @@
     H = window.innerHeight;
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setSize(W, H);
   renderer.setClearColor(0x000000, 1);
 
@@ -410,13 +411,6 @@
       Math.abs(ship.sx) > (W / 2) * offScreenThreshold ||
       Math.abs(ship.sy) > (H / 2) * offScreenThreshold;
     if (re < R_EARTH || rm < R_MOON || offScreen) {
-      console.debug("Ship crashed", {
-        "Distance to Earth": re.toFixed(2),
-        "Distance to Moon": rm.toFixed(2),
-        "Distance to center": Math.hypot(ship.sx, ship.sy).toFixed(2),
-        "Is Offscreen?": offScreen,
-      });
-
       ship.crashed = true;
       ship.crashTimer = 1.5;
       ship.mesh.visible = false;
@@ -432,9 +426,13 @@
 
   // ── Slingshot input ────────────────────────────────────────────────────────
 
-  // Convert canvas mouse coords to scene coords (Y is flipped)
+  // Convert canvas mouse coords to scene coords (Y is flipped).
+  // Accounts for camera zoom and offset (both change on small screens).
   function toScene(cx: number, cy: number) {
-    return { x: cx - W / 2, y: H / 2 - cy };
+    return {
+      x: (cx - W / 2) / camera.zoom + camera.position.x,
+      y: (H / 2 - cy) / camera.zoom + camera.position.y,
+    };
   }
 
   let dragging = false;
@@ -644,6 +642,9 @@
   document.getElementById("crash-btn")!.addEventListener("click", crashOne);
   const keysHeld = new Set<string>();
   window.addEventListener("keydown", (e) => {
+    // Don't hijack keys while a form control (select, slider) is focused
+    const tag = (e.target as HTMLElement | null)?.tagName;
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
     keysHeld.add(e.key);
     if (e.key === "l" || e.key === "L") autoLaunch();
     if (e.key === "b" || e.key === "B") burn();
