@@ -9,6 +9,8 @@ const meta: ExperimentMeta = {
   date: "2026-04-08",
   notes:
     "Drag to orbit · Scroll to zoom\nClick 1–8 to jump to a shape · AUTO resumes cycling",
+  mobileNotes:
+    "Drag to orbit · Pinch to zoom\nTap 1–8 to jump to a shape · AUTO resumes cycling",
   thumbnail,
 };
 

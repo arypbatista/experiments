@@ -41,27 +41,27 @@
   <div style="letter-spacing: 0.12em; font-size: 10px; opacity: 0.45;">PARAMS</div>
 
   <div class="param">
-    <span>SPEED</span><span id="v-speed">0.20</span>
+    <div><span>SPEED</span><span id="v-speed">0.20</span></div>
     <input type="range" id="sl-speed" min="5" max="60" value="20" step="1">
   </div>
   <div class="param">
-    <span>FORCE</span><span id="v-force">0.025</span>
+    <div><span>FORCE</span><span id="v-force">0.025</span></div>
     <input type="range" id="sl-force" min="5" max="80" value="25" step="1">
   </div>
   <div class="param">
-    <span>RIPPLE</span><span id="v-ripple">0.15</span>
+    <div><span>RIPPLE</span><span id="v-ripple">0.15</span></div>
     <input type="range" id="sl-ripple" min="0" max="35" value="15" step="1">
   </div>
   <div class="param">
-    <span>DOT SIZE</span><span id="v-size">0.4</span>
+    <div><span>DOT SIZE</span><span id="v-size">0.4</span></div>
     <input type="range" id="sl-size" min="3" max="25" value="4" step="1">
   </div>
   <div class="param">
-    <span>HOLD (s)</span><span id="v-hold">3.5</span>
+    <div><span>HOLD (s)</span><span id="v-hold">3.5</span></div>
     <input type="range" id="sl-hold" min="10" max="100" value="35" step="5">
   </div>
   <div class="param">
-    <span>DOTS</span><span id="v-dots">3500</span>
+    <div><span>DOTS</span><span id="v-dots">3500</span></div>
     <input type="range" id="sl-dots" min="250" max="5000" value="3500" step="250">
   </div>
 
@@ -94,8 +94,8 @@
     opacity: 0.6;
     letter-spacing: 0.08em;
     font-size: 10px;
+    margin-bottom: 1px;
   }
-  /* Fake the label row — each .param has two spans as first child workaround */
   #controls .param input[type=range] {
     width: 100%;
     margin: 0;
@@ -104,19 +104,6 @@
     height: 14px;
   }
 </style>
-
-<!-- Fix: wrap each param label+value in a div, use JS to build them -->
-<script>
-// Fix param rows: each .param div has [label span] [value span] [input]
-// Restructure so label+value are on one flex row
-document.querySelectorAll('#controls .param').forEach(p => {
-  const spans = p.querySelectorAll('span');
-  const row = document.createElement('div');
-  row.style.cssText = 'display:flex;justify-content:space-between;opacity:0.6;letter-spacing:0.08em;font-size:10px;margin-bottom:1px;';
-  spans.forEach(s => row.appendChild(s));
-  p.insertBefore(row, p.firstChild);
-});
-</script>
 
 <script>
 import * as THREE from 'three';
@@ -330,6 +317,7 @@ async function loadShape(name: string): Promise<Vec3[]> {
   if (shapes[name]) return shapes[name];
   const suffix = name === 'Figure08' ? '' : '.sorted';
   const res  = await fetch(`/flock-shapes/${name}${suffix}.json`);
+  if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
   const data: Vec3[] = await res.json();
   shapes[name] = data.slice(0, MAX_DOTS);
   return shapes[name];
@@ -374,7 +362,11 @@ let initialSteps: Float32Array;
 let globalStep   = 0;
 
 function buildPointCloud(n: number, inheritOpacity = 0) {
-  if (pointsMesh) scene.remove(pointsMesh);
+  if (pointsMesh) {
+    scene.remove(pointsMesh);
+    pointsMesh.geometry.dispose();
+    (pointsMesh.material as THREE.PointsMaterial).dispose();
+  }
 
   const buf = new Float32Array(n * 3);
   const geometry = new THREE.BufferGeometry();
@@ -475,13 +467,18 @@ async function manualSetShape(name: string) {
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
+// Bumped on every (re)start so a stale loop (e.g. AUTO toggled off/on during sleep) exits
+let choreoGen = 0;
+
 async function runChoreography() {
-  while (autoMode) {
+  const gen = ++choreoGen;
+  const live = () => autoMode && gen === choreoGen;
+  while (live()) {
     for (const name of CHOREOGRAPHY) {
-      if (!autoMode) return;
+      if (!live()) return;
       if (!shapes[name]) continue;
       await setShape(name, { expand: currentShapeName !== '' });
-      if (!autoMode) return;
+      if (!live()) return;
       await sleep(pHold);
     }
   }
@@ -611,6 +608,16 @@ function stopLoadStatus() {
   loadStatus.style.display = 'none';
 }
 
+function showLoadError(failed: number) {
+  stopLoadStatus();
+  loadStatus.style.display   = 'block';
+  loadStatus.style.animation = 'none';
+  loadStatus.style.color     = 'rgba(255,120,120,0.75)';
+  loadStatus.textContent     = failed === FIGURE_NAMES.length
+    ? 'shapes failed to load'
+    : `${failed} shape${failed > 1 ? 's' : ''} failed to load`;
+}
+
 function markButtonLoaded(name: string) {
   for (const el of shapeArea.children as HTMLCollectionOf<HTMLButtonElement>) {
     if (el.dataset.shape === name) {
@@ -729,8 +736,14 @@ async function main() {
     }
   };
 
-  await Promise.all(FIGURE_NAMES.map(loadAndActivate));
-  stopLoadStatus();
+  const results = await Promise.allSettled(FIGURE_NAMES.map(loadAndActivate));
+  const failed  = results.filter(r => r.status === 'rejected');
+  if (failed.length) {
+    failed.forEach(r => console.warn('flock-shapes: load failed', (r as PromiseRejectedResult).reason));
+    showLoadError(failed.length);
+  } else {
+    stopLoadStatus();
+  }
 }
 
 main();

@@ -66,7 +66,7 @@ which suppresses visual noise during transitions when dots are moving fast.
 Seven shapes use `.sorted.vertices` files (pre-sorted so spatially adjacent points have nearby
 array indices — this produces smoother transitions since dot _i_ seeks a nearby target rather
 than one across the mesh). Figure08 uses the unsorted original. All files are JSON arrays of
-`{x, y, z}` objects, capped at 3 500 points.
+`{x, y, z}` objects, capped at 5 000 points (`MAX_DOTS`).
 
 The choreography order (`Figure08 → 07 → 04 → 05 → 02 → 06 → 01 → 03`) matches the original
 site's section-driven animation sequence.
@@ -80,12 +80,13 @@ site's section-driven animation sequence.
 | RIPPLE   | 0 – 0.35      | Wave displacement amplitude                                       |
 | DOT SIZE | 0.3 – 2.5     | `THREE.PointsMaterial` size                                       |
 | HOLD (s) | 1 – 10        | Seconds each formed shape is displayed before the next transition |
+| DOTS     | 250 – 5000    | Cluster size (default 3500); rebuilds the cluster on release      |
 
 ## Constants
 
 | Constant              | Value          | Notes                                                          |
 | --------------------- | -------------- | -------------------------------------------------------------- |
-| `MAX_DOTS`            | 3 500          | Cluster size; fixed at init from the first shape's point count |
+| `MAX_DOTS`            | 5 000          | Max points loaded per shape; cluster size is set by DOTS       |
 | `steerVanishDistance` | 10             | Distance at which seek ratio reaches 1 (full speed)            |
 | `avoidDecayRate`      | 0.985          | Per-frame multiplier on avoidance strength                     |
 | Initial boost         | 5×             | Speed and force multiplier applied only during first formation |
