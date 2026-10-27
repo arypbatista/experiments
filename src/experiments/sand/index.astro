@@ -13,8 +13,8 @@
   <button class="mat-btn" data-mat="2">WATER [2]</button>
   <button class="mat-btn" data-mat="3">FIRE [3]</button>
   <button class="mat-btn" data-mat="4">WALL [4]</button>
+  <button class="mat-btn" data-mat="7">ATTRACTOR [5]</button>
   <button class="mat-btn" data-mat="6">SOIL [6]</button>
-  <button class="mat-btn" data-mat="7">GRAVITY [5]</button>
   <button class="mat-btn" data-mat="0">ERASE [E]</button>
   <div class="divider"></div>
   <label>
@@ -23,7 +23,7 @@
   </label>
   <div class="divider"></div>
   <label class="toggle-label">
-    <input id="gravity-toggle" type="checkbox" />
+    <input id="gravity-toggle" type="checkbox" checked />
     <span>global gravity</span>
   </label>
   <div class="divider"></div>
@@ -254,17 +254,23 @@
       deathLife: () => (30 + Math.random() * 40) | 0,
       sideEffect: fireSideEffect,
     },
-    [WALL]: { density: 20 },
+    [WALL]: { gravity: 0, density: 20 },
     [SMOKE]: { gravity: -1, ephemeral: true, density: 1 },
     [ATTRACTOR]: { gravity: 0, density: 30, brushRadius: 0 },
   };
 
-  function getMaterialConfig(material: number): MaterialConfig {
-    return Object.assign(
+  // Resolved once: material id → full config (defaults merged in).
+  const resolvedConfigs: MaterialConfig[] = [];
+  for (let m = 0; m <= ATTRACTOR; m++) {
+    resolvedConfigs[m] = Object.assign(
       {},
       defaultMaterialConfig,
-      materialConfigs[material] || {},
+      materialConfigs[m] || {},
     );
+  }
+
+  function getMaterialConfig(material: number): MaterialConfig {
+    return resolvedConfigs[material];
   }
 
   function lighterThan(materialA: number, materialB: number) {
@@ -332,16 +338,38 @@
   const ATTRACTOR_RADIUS = 1000;
   const ATTRACTOR_STRENGTH = 1000;
 
+  // Move particle at (px,py) by (mx,my) if the target cell is empty.
+  function tryAttractMove(
+    pidx: number,
+    px: number,
+    py: number,
+    mx: number,
+    my: number,
+  ) {
+    const nx = px + mx,
+      ny = py + my;
+    if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) return false;
+    const nidx = ny * COLS + nx;
+    if (grid[nidx] !== EMPTY) return false;
+    swapCells(pidx, nidx);
+    moved[nidx] = 1;
+    return true;
+  }
+
   function applyAttractors() {
     for (let ay = 0; ay < ROWS; ay++) {
       for (let ax = 0; ax < COLS; ax++) {
         if (grid[ay * COLS + ax] !== ATTRACTOR) continue;
-        for (let dy = -ATTRACTOR_RADIUS; dy <= ATTRACTOR_RADIUS; dy++) {
-          for (let dx = -ATTRACTOR_RADIUS; dx <= ATTRACTOR_RADIUS; dx++) {
+        // Clamp the scan window to the grid instead of iterating off-screen cells.
+        const dyMin = Math.max(-ATTRACTOR_RADIUS, -ay),
+          dyMax = Math.min(ATTRACTOR_RADIUS, ROWS - 1 - ay);
+        const dxMin = Math.max(-ATTRACTOR_RADIUS, -ax),
+          dxMax = Math.min(ATTRACTOR_RADIUS, COLS - 1 - ax);
+        for (let dy = dyMin; dy <= dyMax; dy++) {
+          for (let dx = dxMin; dx <= dxMax; dx++) {
             if (dx === 0 && dy === 0) continue;
             const px = ax + dx,
               py = ay + dy;
-            if (px < 0 || px >= COLS || py < 0 || py >= ROWS) continue;
             const pidx = py * COLS + px;
             const pt = grid[pidx];
             if (pt === EMPTY || pt === WALL || pt === ATTRACTOR) continue;
@@ -361,22 +389,14 @@
             const dist = Math.sqrt(dist2);
             const t1x = Math.round(-dy / dist), t1y = Math.round(dx / dist);
             const t2x = -t1x, t2y = -t1y;
-            const flip = Math.random() < 0.5;
-            const candidates: [number, number][] = [
-              [ix, iy],
-              flip ? [t1x, t1y] : [t2x, t2y],
-              flip ? [t2x, t2y] : [t1x, t1y],
-            ];
-            for (const [mx, my] of candidates) {
-              const nx = px + mx,
-                ny = py + my;
-              if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) continue;
-              const nidx = ny * COLS + nx;
-              if (grid[nidx] === EMPTY) {
-                swapCells(pidx, nidx);
-                moved[nidx] = 1;
-                break;
-              }
+            // Candidates in order: inward, then both tangents in random order.
+            if (tryAttractMove(pidx, px, py, ix, iy)) continue;
+            if (Math.random() < 0.5) {
+              if (!tryAttractMove(pidx, px, py, t1x, t1y))
+                tryAttractMove(pidx, px, py, t2x, t2y);
+            } else {
+              if (!tryAttractMove(pidx, px, py, t2x, t2y))
+                tryAttractMove(pidx, px, py, t1x, t1y);
             }
           }
         }
@@ -466,7 +486,7 @@
   }
 
   // ── Drawing input ───────────────────────────────────────────────────────────
-  let globalGravity = false;
+  let globalGravity = true;
 
   let drawing = false;
   let currentMat = SAND;
