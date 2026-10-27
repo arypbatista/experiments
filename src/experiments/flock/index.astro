@@ -313,6 +313,11 @@ function destroySim(s: SimState) {
   scene.remove(s.points);
   (s.points.geometry as THREE.BufferGeometry).dispose();
   (s.points.material as THREE.ShaderMaterial).dispose();
+  // Frees ping-pong render targets, initial value textures and the fullscreen quad
+  s.gpuCompute.dispose();
+  // Variable compute materials are not covered by gpuCompute.dispose()
+  s.positionVar.material.dispose();
+  s.velocityVar.material.dispose();
 }
 
 // Boot
