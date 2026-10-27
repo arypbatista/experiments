@@ -1,0 +1,701 @@
+---
+---
+
+<canvas id="c" style="position:fixed;inset:0;display:block;background:#ecebe6;touch-action:none;cursor:crosshair;"></canvas>
+
+<div
+  id="controls"
+  style="position:fixed;top:64px;right:24px;font-family:monospace;font-size:11px;color:rgba(0,0,0,0.65);display:flex;flex-direction:column;gap:8px;width:190px;"
+>
+  <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:2px;">
+    <span style="font-size:12px;color:rgba(0,0,0,0.85);letter-spacing:0.06em;">WEATHER</span>
+    <span class="desc" style="font-size:10px;color:rgba(0,0,0,0.4);line-height:1.4;">how hard the storm hits the drawing</span>
+  </div>
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="rain-label">rain: 1.00</span>
+    <input id="rain-range" type="range" min="0" max="3" step="0.05" value="1" style="accent-color:#222;width:100%;" />
+  </label>
+  <div style="display:flex;flex-direction:column;gap:2px;margin-top:4px;">
+    <span style="font-size:12px;color:rgba(0,0,0,0.85);letter-spacing:0.06em;">POINTER</span>
+    <span class="desc" style="font-size:10px;color:rgba(0,0,0,0.4);line-height:1.4;">hold to jet water, or hold and release to throw a stone</span>
+  </div>
+  <div style="display:flex;gap:6px;">
+    <button id="mode-rain" style="flex:1;background:transparent;border:1px solid rgba(0,0,0,0.4);color:rgba(0,0,0,0.7);font-family:monospace;font-size:11px;padding:5px 8px;cursor:pointer;letter-spacing:0.08em;">RAIN [1]</button>
+    <button id="mode-stones" style="flex:1;background:transparent;border:1px solid rgba(0,0,0,0.4);color:rgba(0,0,0,0.7);font-family:monospace;font-size:11px;padding:5px 8px;cursor:pointer;letter-spacing:0.08em;">STONES [2]</button>
+  </div>
+</div>
+
+<div id="actions" style="position:fixed;bottom:24px;right:24px;display:flex;gap:8px;">
+  <button
+    id="rockfall-btn"
+    style="background:rgba(236,235,230,0.6);border:1px solid rgba(0,0,0,0.75);color:rgba(0,0,0,0.85);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >ROCKFALL [F]</button>
+  <button
+    id="gust-btn"
+    style="background:rgba(236,235,230,0.6);border:1px solid rgba(0,0,0,0.4);color:rgba(0,0,0,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >GUST [G]</button>
+  <button
+    id="reset-btn"
+    style="background:rgba(236,235,230,0.6);border:1px solid rgba(0,0,0,0.4);color:rgba(0,0,0,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >RESET [R]</button>
+</div>
+
+<style>
+  @media (max-width: 600px) {
+    #controls { top: 52px !important; right: 12px !important; width: 128px !important; gap: 6px !important; }
+    #controls .desc { display: none; }
+    #controls button { font-size: 10px !important; padding: 4px 4px !important; }
+    #actions { right: 12px !important; bottom: 12px !important; gap: 6px !important; }
+    #actions button { font-size: 10px !important; padding: 5px 7px !important; }
+  }
+</style>
+
+<script>
+  import { loadInk, PAPER, PAPER_RGB, INK_RGB } from '../../lib/ink';
+  import { createStones, makeStone } from './stones';
+
+  // ── grid ────────────────────────────────────────────────────────────────
+  const SCALE = 0.5;          // simulation resolution relative to the drawing
+  const MARGIN_X = 0.4;       // extra width on each side for the debris fan
+  const MARGIN_BOTTOM = 0.16; // floor space below the figure
+
+  // ── weather ─────────────────────────────────────────────────────────────
+  const RAIN = 34;            // drops per frame at rain = 1
+  const G = 0.22;             // gravity on drops (cells/frame²)
+  const TERMINAL = 6;         // terminal drop speed (cells/frame)
+  const ERODE = 0.7;          // damage chance of a drop at terminal speed
+  const FLOW_ERODE = 0.05;    // damage chance per step for water running over rock
+  const CARRY = 5;            // max grains one drop can carry
+  const FLOW_STEPS = 3;       // cells per frame a rivulet travels
+  const LIFE = 420;           // frames before a drop soaks in
+
+  // ── jet (pointer) ───────────────────────────────────────────────────────
+  const JET = 34;             // jet particles per frame
+  const JET_SPEED = 8;
+  const JET_RADIUS = 5;       // direct carve radius around the nozzle
+
+  // ── collapse ────────────────────────────────────────────────────────────
+  const SUPPORT_EVERY = 8;    // frames between support checks
+  const SAND_PASSES = 2;      // sediment CA passes per frame
+
+  // ── stones ──────────────────────────────────────────────────────────────
+  const ROCKFALL_EVERY = [360, 840]; // frames between automatic rockfalls (min, max)
+  const STONE_MIN = 2.2, STONE_MAX = 18; // radius in cells: pebble → boulder
+  const GROW_FRAMES = 75;     // hold time to grow a boulder
+
+  const AIR = 0, ROCK = 1, SED = 2;
+  const MAXP = 24000, MAXS = 8000;
+
+  async function main() {
+    const canvas = document.getElementById('c') as HTMLCanvasElement;
+    const src = await loadInk(SCALE);
+    const ox = Math.round(src.w * MARGIN_X);
+    const gw = src.w + ox * 2;
+    const gh = Math.round(src.h * (1 + MARGIN_BOTTOM));
+    const N = gw * gh;
+
+    const cell = new Uint8Array(N);
+    const hp = new Uint8Array(N);
+    const tone = new Uint8Array(N);   // rock: original ink darkness; sediment: strata brightness
+    const support = new Uint8Array(N);
+    const wet = new Float32Array(N);
+    const mark = new Uint8Array(N);
+    const queue = new Int32Array(N);
+
+    // edge fade so stains never show the grid rectangle
+    const fadeX = new Float32Array(gw);
+    for (let x = 0; x < gw; x++) fadeX[x] = Math.min(1, Math.min(x, gw - 1 - x) / 40);
+
+    // the base of the drawing is bedrock; anything cut off from it falls
+    let inkBottom = 0;
+    for (let i = 0; i < src.w * src.h; i++) if (src.ink[i] > 0.5) inkBottom = Math.floor(i / src.w);
+    const kickFloor = inkBottom - 30;
+
+    // ── particles: water (SoA) ────────────────────────────────────────────
+    const px = new Float32Array(MAXP), py = new Float32Array(MAXP);
+    const pvx = new Float32Array(MAXP), pvy = new Float32Array(MAXP);
+    const pload = new Uint8Array(MAXP), pstate = new Uint8Array(MAXP);
+    const pdir = new Int8Array(MAXP), pstuck = new Uint8Array(MAXP);
+    const plife = new Uint16Array(MAXP), pjet = new Uint8Array(MAXP);
+    let np = 0;
+
+    // ── particles: spray + dust ───────────────────────────────────────────
+    const sx = new Float32Array(MAXS), sy = new Float32Array(MAXS);
+    const svx = new Float32Array(MAXS), svy = new Float32Array(MAXS);
+    const slife = new Uint8Array(MAXS), skind = new Uint8Array(MAXS), stone = new Uint8Array(MAXS);
+    let ns = 0;
+
+    // ── falling chunks ────────────────────────────────────────────────────
+    interface Chunk { dx: Int16Array; dy: Int16Array; tone: Uint8Array; bottom: Map<number, number>; x: number; y: number; vy: number; acc: number; }
+    let chunks: Chunk[] = [];
+
+    let rockDirty = true;
+    let frameNo = 0;
+    let shake = 0;
+    let layerTone = 70, layerTimer = 0;
+    let wind = 0, windBase = 0.15, windTarget = 0.15, gustT = 0, nextGust = 400;
+    let rainMul = 1;
+    let nextRockfall = 150;
+
+    function reset() {
+      cell.fill(AIR); hp.fill(0); tone.fill(0); support.fill(0); wet.fill(0);
+      np = 0; ns = 0; chunks = []; stones.clear(); nextRockfall = 150;
+      for (let y = 0; y < src.h; y++)
+        for (let x = 0; x < src.w; x++) {
+          const v = src.ink[y * src.w + x];
+          if (v <= 0.5) continue;
+          const c = y * gw + x + ox;
+          cell[c] = ROCK;
+          tone[c] = Math.min(255, Math.round(v * 255));
+          hp[c] = 1 + Math.floor(v * 3);
+          if (y >= inkBottom - 8) { support[c] = 1; hp[c] = 12; }
+        }
+      // glue every initially floating speck by one pin so nothing drops at t=0
+      flood();
+      for (let i = 0; i < N; i++) if (cell[i] === ROCK && !mark[i]) { support[i] = 1; floodFrom(i, 1); }
+      rockDirty = false;
+      frameNo = 0; layerTimer = 0; shake = 0;
+    }
+
+    // ── support / collapse ────────────────────────────────────────────────
+    function floodFrom(start: number, m: number) {
+      let qh = 0, qt = 0;
+      queue[qt++] = start; mark[start] = m;
+      while (qh < qt) {
+        const c = queue[qh++];
+        const x = c % gw;
+        for (let oy = -gw; oy <= gw; oy += gw)
+          for (let ox2 = -1; ox2 <= 1; ox2++) {
+            const xx = x + ox2;
+            if (xx < 0 || xx >= gw) continue;
+            const n = c + oy + ox2;
+            if (n < 0 || n >= N || mark[n] || cell[n] !== ROCK) continue;
+            mark[n] = m; queue[qt++] = n;
+          }
+      }
+      return qt;
+    }
+
+    function flood() {
+      mark.fill(0);
+      for (let i = 0; i < N; i++) if (support[i] && cell[i] === ROCK && !mark[i]) floodFrom(i, 1);
+    }
+
+    function checkSupport() {
+      flood();
+      for (let i = 0; i < N; i++) {
+        if (cell[i] !== ROCK || mark[i]) continue;
+        const n = floodFrom(i, 2);
+        let minX = 1e9, minY = 1e9;
+        for (let k = 0; k < n; k++) { const c = queue[k]; minX = Math.min(minX, c % gw); minY = Math.min(minY, (c / gw) | 0); }
+        const dx = new Int16Array(n), dy = new Int16Array(n), tn = new Uint8Array(n);
+        const bottom = new Map<number, number>();
+        for (let k = 0; k < n; k++) {
+          const c = queue[k];
+          const cx = c % gw - minX, cy = ((c / gw) | 0) - minY;
+          dx[k] = cx; dy[k] = cy; tn[k] = tone[c];
+          if ((bottom.get(cx) ?? -1) < cy) bottom.set(cx, cy);
+          cell[c] = AIR; hp[c] = 0; support[c] = 0;
+        }
+        chunks.push({ dx, dy, tone: tn, bottom, x: minX, y: minY, vy: 0, acc: 0 });
+      }
+    }
+
+    function chunkBlocked(ch: Chunk) {
+      for (const [cx, cy] of ch.bottom) {
+        const y = ch.y + cy + 1;
+        if (y >= gh) return true;
+        const x = ch.x + cx;
+        if (x < 0 || x >= gw) continue;
+        if (cell[y * gw + x] !== AIR) return true;
+      }
+      return false;
+    }
+
+    function stepChunks() {
+      const keep: Chunk[] = [];
+      for (const ch of chunks) {
+        ch.vy = Math.min(ch.vy + 0.28, 10);
+        ch.acc += ch.vy;
+        let landed = false;
+        while (ch.acc >= 1) {
+          ch.acc -= 1;
+          if (chunkBlocked(ch)) { landed = true; break; }
+          ch.y++;
+        }
+        if (!landed) { keep.push(ch); continue; }
+        shatter(ch);
+      }
+      chunks = keep;
+    }
+
+    function shatter(ch: Chunk) {
+      const n = ch.dx.length;
+      const force = Math.max(1, ch.vy);
+      for (let k = 0; k < n; k++) {
+        const x = ch.x + ch.dx[k], y = ch.y + ch.dy[k];
+        if (x < 0 || x >= gw || y < 0 || y >= gh) continue;
+        const c = y * gw + x;
+        if (cell[c] !== AIR) continue;
+        cell[c] = SED;
+        tone[c] = Math.min(150, 10 + (255 - ch.tone[k]) * 0.4 + Math.random() * 25);
+        if (Math.random() < 0.08 * force / 4) spawnSpray(x, y - 1, (Math.random() - 0.5) * force * 0.9, -Math.random() * force * 0.8, 1);
+      }
+      // impact bites into whatever it hit
+      const mid = ch.x + (ch.dx.reduce((a, b) => Math.max(a, b), 0) >> 1);
+      const footY = ch.y + ch.dy.reduce((a, b) => Math.max(a, b), 0) + 1;
+      const r = Math.min(10, 1 + Math.sqrt(n) * 0.25 * force / 6);
+      for (let yy = -r; yy <= r; yy++)
+        for (let xx = -r * 2; xx <= r * 2; xx++) {
+          const x = mid + xx, y = footY + yy;
+          if (x < 0 || x >= gw || y < 0 || y >= gh) continue;
+          const c = y * gw + x;
+          if (cell[c] === ROCK && !support[c] && Math.random() < 0.5) loosen(c);
+        }
+      shake = Math.min(14, shake + Math.sqrt(n) * force * 0.06);
+    }
+
+    // ── cells ─────────────────────────────────────────────────────────────
+    function loosen(c: number) { // rock → loose sediment grain
+      cell[c] = SED; hp[c] = 0; support[c] = 0; rockDirty = true;
+      tone[c] = 20 + Math.random() * 40;
+    }
+
+    function damage(c: number): boolean { // returns true when the rock cell breaks
+      if (hp[c] > 1) { hp[c]--; return false; }
+      cell[c] = AIR; hp[c] = 0; support[c] = 0; rockDirty = true;
+      return true;
+    }
+
+    // a drop hitting loose grit splashes it sideways, so ledges keep shedding
+    function kick(c: number, x: number, y: number, vx: number) {
+      if (y > kickFloor || cell[c - gw] !== AIR) return; // the floor pile is left alone
+      const d = vx > 0.3 ? 1 : vx < -0.3 ? -1 : Math.random() < 0.5 ? -1 : 1;
+      spawnSpray(x + 0.5, y - 0.5, d * (0.6 + Math.random() * 1.8) + vx * 0.3, -(0.6 + Math.random() * 1.6), 2, tone[c]);
+      cell[c] = AIR;
+    }
+
+    function placeSed(x: number, y: number, n: number) {
+      for (let yy = Math.min(y, gh - 1); yy >= 0 && n > 0 && yy > y - 40; yy--) {
+        const c = yy * gw + x;
+        if (cell[c] === AIR) { cell[c] = SED; tone[c] = layerTone + Math.random() * 18; n--; }
+      }
+    }
+
+    // ── spray ─────────────────────────────────────────────────────────────
+    // kind 0 = water spray, 1 = dust, 2 = grain (lands as sediment)
+    function spawnSpray(x: number, y: number, vx: number, vy: number, kind: number, t = 0) {
+      if (ns >= MAXS) { if (kind === 2) placeSed(Math.floor(x), Math.floor(y), 1); return; }
+      sx[ns] = x; sy[ns] = y; svx[ns] = vx; svy[ns] = vy;
+      slife[ns] = 18 + (Math.random() * 30) | 0; skind[ns] = kind; stone[ns] = t; ns++;
+    }
+
+    function stepSpray() {
+      for (let i = 0; i < ns; i++) {
+        svy[i] = Math.min(svy[i] + 0.18, 6); svx[i] += (wind - svx[i]) * 0.03;
+        let dead = false;
+        if (skind[i] === 2) {
+          const steps = Math.ceil(Math.max(Math.abs(svx[i]), Math.abs(svy[i]), 1));
+          for (let k = 0; k < steps; k++) {
+            const nx = sx[i] + svx[i] / steps, ny = sy[i] + svy[i] / steps;
+            const cx = Math.floor(nx), cy = Math.floor(ny);
+            if (cx < 1 || cx >= gw - 1) { dead = true; break; }
+            if (cy >= gh || (cy >= 0 && cell[cy * gw + cx] !== AIR)) {
+              const fx = Math.floor(sx[i]), fy = Math.floor(sy[i]);
+              if (fy >= 0 && fy < gh && cell[fy * gw + fx] === AIR) { cell[fy * gw + fx] = SED; tone[fy * gw + fx] = stone[i]; }
+              dead = true; break;
+            }
+            sx[i] = nx; sy[i] = ny;
+          }
+        } else {
+          sx[i] += svx[i]; sy[i] += svy[i];
+          dead = --slife[i] === 0 || sy[i] >= gh;
+        }
+        if (dead) {
+          ns--; sx[i] = sx[ns]; sy[i] = sy[ns]; svx[i] = svx[ns]; svy[i] = svy[ns];
+          slife[i] = slife[ns]; skind[i] = skind[ns]; stone[i] = stone[ns]; i--;
+        }
+      }
+    }
+
+    // ── water ─────────────────────────────────────────────────────────────
+    function spawnDrop(x: number, y: number, vx: number, vy: number, jet: number) {
+      if (np >= MAXP) return;
+      px[np] = x; py[np] = y; pvx[np] = vx; pvy[np] = vy;
+      pload[np] = 0; pstate[np] = 0; pstuck[np] = 0; plife[np] = LIFE; pjet[np] = jet; pdir[np] = 1;
+      np++;
+    }
+
+    function kill(i: number) {
+      np--;
+      px[i] = px[np]; py[i] = py[np]; pvx[i] = pvx[np]; pvy[i] = pvy[np];
+      pload[i] = pload[np]; pstate[i] = pstate[np]; pdir[i] = pdir[np];
+      pstuck[i] = pstuck[np]; plife[i] = plife[np]; pjet[i] = pjet[np];
+    }
+
+    function erodeInto(i: number, c: number) {
+      if (cell[c] === ROCK) {
+        if (damage(c)) {
+          // half the debris is carried off in the water, half breaks loose as grit
+          if (pload[i] < CARRY && Math.random() < 0.5) pload[i]++;
+          else { cell[c] = SED; tone[c] = 15 + Math.random() * 35; }
+          return true;
+        }
+      } else if (cell[c] === SED && pload[i] < CARRY) {
+        cell[c] = AIR; pload[i]++;
+        return true;
+      }
+      return false;
+    }
+
+    function stepFalling(i: number): boolean {
+      if (!pjet[i]) pvx[i] += (wind - pvx[i]) * 0.05;
+      pvy[i] = Math.min(pvy[i] + G, pjet[i] ? JET_SPEED + 2 : TERMINAL);
+      const steps = Math.ceil(Math.max(Math.abs(pvx[i]), Math.abs(pvy[i]), 1));
+      const ddx = pvx[i] / steps, ddy = pvy[i] / steps;
+      for (let s = 0; s < steps; s++) {
+        const nx = px[i] + ddx, ny = py[i] + ddy;
+        const cx = Math.floor(nx), cy = Math.floor(ny);
+        if (cy >= gh) { placeSed(Math.min(gw - 1, Math.max(0, cx)), gh - 1, pload[i]); return false; }
+        if (cx < 0 || cx >= gw || cy < 0) {
+          if ((nx < viewX0 - 20 && ddx <= 0) || (nx > viewX1 + 20 && ddx >= 0)) return false;
+          px[i] = nx; py[i] = ny; continue;
+        }
+        const c = cy * gw + cx;
+        if (cell[c] === AIR) { px[i] = nx; py[i] = ny; continue; }
+
+        // impact
+        const speed = Math.hypot(pvx[i], pvy[i]);
+        const p = cell[c] === ROCK ? ERODE * (speed / TERMINAL) ** 2 : pjet[i] ? 0.3 : 0.015;
+        if (Math.random() < p) erodeInto(i, c);
+        else if (cell[c] === SED && Math.random() < 0.35) kick(c, cx, cy, pvx[i]);
+        if (speed > 3.5 && Math.random() < (pjet[i] ? 0.5 : 0.18)) {
+          const k = cell[c] === ROCK && Math.random() < 0.3 ? 1 : 0;
+          spawnSpray(px[i], py[i] - 0.5, -pvx[i] * 0.3 + (Math.random() - 0.5) * 2.5, -speed * (0.2 + Math.random() * 0.3), k);
+        }
+        const fx = Math.floor(px[i]), fy = Math.floor(py[i]);
+        if (fx < 0 || fx >= gw || fy < 0 || cell[fy * gw + fx] !== AIR) return false;
+        px[i] = fx + 0.5; py[i] = fy + 0.5;
+        pstate[i] = 1; pstuck[i] = 0;
+        pdir[i] = Math.abs(pvx[i]) > 0.3 ? (pvx[i] > 0 ? 1 : -1) : (Math.random() < 0.5 ? -1 : 1);
+        return true;
+      }
+      return true;
+    }
+
+    function stepFlowing(i: number): boolean {
+      for (let k = 0; k < FLOW_STEPS; k++) {
+        const x = Math.floor(px[i]), y = Math.floor(py[i]);
+        if (x <= 0 || x >= gw - 1) { placeSed(Math.min(gw - 2, Math.max(1, x)), y, pload[i]); return false; }
+        if (y + 1 >= gh) { placeSed(x, gh - 1, pload[i]); return false; }
+        const c = y * gw + x, b = c + gw;
+        wet[c] = Math.min(1, wet[c] + 0.25);
+        if (cell[b] === AIR) { // fell off an edge
+          pstate[i] = 0; pvx[i] = pdir[i] * 0.8; pvy[i] = 0.6;
+          return true;
+        }
+        // water running over the surface cuts down into it
+        const rate = cell[b] === ROCK ? FLOW_ERODE * (1 + pload[i] * 0.4) : 0.006;
+        if (Math.random() < rate && erodeInto(i, b)) continue;
+        const d = pdir[i];
+        if (cell[b + d] === AIR) { px[i] += d; py[i] += 1; pstuck[i] = 0; continue; }
+        if (cell[c + d] === AIR) { px[i] += d; continue; }
+        if (cell[b - d] === AIR) { pdir[i] = -d; px[i] -= d; py[i] += 1; pstuck[i] = 0; continue; }
+        // pooled in a hollow: dump sediment, eventually soak in
+        pdir[i] = -d;
+        if (++pstuck[i] > 8) { placeSed(x, y, pload[i]); return false; }
+      }
+      if (--plife[i] === 0) { placeSed(Math.floor(px[i]), Math.floor(py[i]), pload[i]); return false; }
+      return true;
+    }
+
+    function stepWater() {
+      for (let i = 0; i < np; i++) {
+        const alive = pstate[i] === 0 ? stepFalling(i) : stepFlowing(i);
+        if (!alive) { kill(i); i--; }
+      }
+    }
+
+    // ── sediment CA ───────────────────────────────────────────────────────
+    function stepSand() {
+      for (let y = gh - 2; y >= 0; y--) {
+        const ltr = (y + frameNo) & 1;
+        const row = y * gw;
+        for (let k = 0; k < gw; k++) {
+          const x = ltr ? k : gw - 1 - k;
+          const i = row + x;
+          if (cell[i] !== SED) continue;
+          if (x === 0 || x === gw - 1) { cell[i] = AIR; continue; } // spills off the page
+          const b = i + gw;
+          let to = -1;
+          if (cell[b] === AIR) to = b;
+          else {
+            const dir = Math.random() < 0.5 ? -1 : 1;
+            if (cell[b + dir] === AIR) to = b + dir;
+            else if (cell[b - dir] === AIR) to = b - dir;
+          }
+          if (to >= 0) { cell[to] = SED; tone[to] = tone[i]; wet[to] = wet[i]; cell[i] = AIR; }
+        }
+      }
+    }
+
+    // ── view ──────────────────────────────────────────────────────────────
+    const off = document.createElement('canvas');
+    off.width = gw; off.height = gh;
+    const offCtx = off.getContext('2d')!;
+    const image = offCtx.createImageData(gw, gh);
+    const pix = new Uint32Array(image.data.buffer);
+    const rgb = (r: number, g: number, b: number) => (255 << 24) | (b << 16) | (g << 8) | r;
+    const PAPER_PX = rgb(PAPER_RGB[0], PAPER_RGB[1], PAPER_RGB[2]);
+    const mix = (t: number, a: [number, number, number], b: [number, number, number]) =>
+      rgb(Math.round(a[0] + (b[0] - a[0]) * t), Math.round(a[1] + (b[1] - a[1]) * t), Math.round(a[2] + (b[2] - a[2]) * t));
+    const WASH: [number, number, number] = [196, 199, 201];
+    const ROCK_LUT = new Uint32Array(256), SED_LUT = new Uint32Array(256), WET_LUT = new Uint32Array(64);
+    for (let v = 0; v < 256; v++) {
+      ROCK_LUT[v] = mix(Math.min(1, v / 210), PAPER_RGB, INK_RGB);
+      SED_LUT[v] = mix(Math.min(1, v / 255), INK_RGB, PAPER_RGB);
+    }
+    for (let v = 0; v < 64; v++) WET_LUT[v] = mix(v / 63, PAPER_RGB, WASH);
+    const WATER_PX = rgb(150, 156, 162), WATER_LOADED_PX = rgb(88, 90, 92);
+    const DUST_PX = rgb(INK_RGB[0] + 30, INK_RGB[1] + 30, INK_RGB[2] + 30);
+
+    let W = 0, H = 0, S = 1, RX = 0, RY = 0;
+    let viewX0 = 0, viewX1 = gw, viewY0 = 0;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const ctx = canvas.getContext('2d')!;
+    function resize() {
+      W = window.innerWidth; H = window.innerHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+      const portrait = H > W;
+      S = Math.min((W * (portrait ? 1.0 : 0.98)) / gw, (H * 0.95) / gh);
+      RX = (W - gw * S) / 2;
+      RY = H - gh * S; // floor sits on the bottom edge of the screen
+      viewX0 = -RX / S; viewX1 = (W - RX) / S; viewY0 = -RY / S;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    const stones = createStones({
+      gw, gh, cell, tone, hp, support,
+      wind: () => wind,
+      viewX0: () => viewX0, viewX1: () => viewX1,
+      spray: spawnSpray,
+      removeRock: (c) => { cell[c] = AIR; hp[c] = 0; support[c] = 0; rockDirty = true; },
+      shake: (a) => { shake = Math.min(16, shake + a); },
+    });
+
+    function render() {
+      for (let i = 0; i < N; i++) {
+        const t = cell[i];
+        if (t === ROCK) pix[i] = ROCK_LUT[tone[i]];
+        else if (t === SED) pix[i] = SED_LUT[tone[i]];
+        else {
+          const w = wet[i];
+          if (w > 0.01) {
+            pix[i] = WET_LUT[Math.min(63, (w * 63 * fadeX[i % gw]) | 0)];
+            wet[i] = w * 0.992;
+          } else pix[i] = PAPER_PX;
+        }
+      }
+      for (const ch of chunks) {
+        for (let k = 0; k < ch.dx.length; k++) {
+          const x = ch.x + ch.dx[k], y = ch.y + ch.dy[k];
+          if (x >= 0 && x < gw && y >= 0 && y < gh) pix[y * gw + x] = ROCK_LUT[ch.tone[k]];
+        }
+      }
+      for (let i = 0; i < np; i++) {
+        if (pstate[i] !== 1) continue;
+        const x = Math.floor(px[i]), y = Math.floor(py[i]);
+        if (x >= 0 && x < gw && y >= 0 && y < gh) pix[y * gw + x] = pload[i] > 1 ? WATER_LOADED_PX : WATER_PX;
+      }
+      for (let i = 0; i < ns; i++) {
+        const x = Math.floor(sx[i]), y = Math.floor(sy[i]);
+        if (x >= 0 && x < gw && y >= 0 && y < gh) pix[y * gw + x] = skind[i] === 2 ? SED_LUT[stone[i]] : skind[i] ? DUST_PX : WATER_PX;
+      }
+      offCtx.putImageData(image, 0, 0);
+
+      const shx = (Math.random() - 0.5) * shake, shy = (Math.random() - 0.5) * shake;
+      shake *= 0.88;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = PAPER;
+      ctx.fillRect(0, 0, W, H);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(off, RX + shx, RY + shy, gw * S, gh * S);
+
+      // rain streaks in screen space (they also fall over the margins)
+      ctx.lineCap = 'round';
+      for (let pass = 0; pass < 2; pass++) {
+        ctx.beginPath();
+        for (let i = 0; i < np; i++) {
+          if (pstate[i] !== 0 || pjet[i] !== pass) continue;
+          const x = RX + px[i] * S + shx, y = RY + py[i] * S + shy;
+          const k = pass ? 2.2 : 1.6;
+          ctx.moveTo(x - pvx[i] * S * k, y - pvy[i] * S * k);
+          ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = pass ? 'rgba(70,76,82,0.55)' : 'rgba(60,66,72,0.28)';
+        ctx.lineWidth = pass ? Math.max(1.4, S * 0.9) : Math.max(0.8, S * 0.45);
+        ctx.stroke();
+      }
+
+      ctx.save();
+      ctx.translate(shx, shy);
+      stones.draw(ctx, RX, RY, S, '#141312', 'rgba(236,235,230,1)');
+      ctx.restore();
+      if (holding) {
+        ctx.beginPath();
+        ctx.arc(RX + jx * S, RY + jy * S, holdRadius() * S, 0, Math.PI * 2);
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = 'rgba(20,19,18,0.6)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    // ── input ─────────────────────────────────────────────────────────────
+    let jetOn = false, jx = 0, jy = 0, jvx = 0, jvy = 0;
+    let mode: 'rain' | 'stones' = 'rain';
+    let holding = false, holdFrames = 0;
+    function toGrid(e: PointerEvent) {
+      const nx = (e.clientX - RX) / S, ny = (e.clientY - RY) / S;
+      jvx = jvx * 0.5 + (nx - jx) * 0.5; jvy = jvy * 0.5 + (ny - jy) * 0.5;
+      jx = nx; jy = ny;
+    }
+    canvas.addEventListener('pointerdown', (e) => {
+      toGrid(e); jvx = jvy = 0; canvas.setPointerCapture(e.pointerId);
+      if (mode === 'rain') jetOn = true; else { holding = true; holdFrames = 0; }
+    });
+    canvas.addEventListener('pointermove', toGrid);
+    const stop = () => {
+      jetOn = false;
+      if (holding) { holding = false; throwStone(); }
+    };
+    canvas.addEventListener('pointerup', stop);
+    canvas.addEventListener('pointercancel', stop);
+
+    function jet() {
+      for (let i = 0; i < JET; i++) {
+        const a = (Math.random() - 0.5) * 0.5;
+        spawnDrop(jx + (Math.random() - 0.5) * 3, jy - 6 + Math.random() * 3,
+          Math.sin(a) * JET_SPEED + jvx * 0.3, Math.cos(a) * JET_SPEED + Math.max(0, jvy) * 0.3, 1);
+      }
+      const cx = Math.round(jx), cy = Math.round(jy);
+      for (let yy = -JET_RADIUS; yy <= JET_RADIUS; yy++)
+        for (let xx = -JET_RADIUS; xx <= JET_RADIUS; xx++) {
+          if (xx * xx + yy * yy > JET_RADIUS * JET_RADIUS) continue;
+          const x = cx + xx, y = cy + yy;
+          if (x < 1 || x >= gw - 1 || y < 0 || y >= gh) continue;
+          const c = y * gw + x;
+          if (cell[c] === ROCK && Math.random() < 0.3 && damage(c)) {
+            if (Math.random() < 0.5) { cell[c] = SED; tone[c] = 25 + Math.random() * 30; }
+            if (Math.random() < 0.3) spawnSpray(x, y, (Math.random() - 0.5) * 4, -Math.random() * 3, 1);
+          }
+        }
+    }
+
+    const holdRadius = () => STONE_MIN + (STONE_MAX - STONE_MIN) * Math.min(1, holdFrames / GROW_FRAMES) ** 1.5;
+
+    // drop at the cursor; if the cursor is inside rock, the stone comes from above it
+    function throwStone() {
+      const r = holdRadius();
+      if (stones.free(jx, jy, r)) stones.add(makeStone(jx, jy, r, jvx * 0.6, jvy * 0.6));
+      else stones.add(makeStone(jx, viewY0 - r - 4, r, 0, 4));
+    }
+
+    function rockfall(n = 5 + Math.floor(Math.random() * 5)) {
+      // a slide from somewhere above the figure: staggered heights, mixed sizes
+      const cx = ox + src.w * (0.2 + Math.random() * 0.6);
+      for (let i = 0; i < n; i++) {
+        const big = Math.random() < 0.4;
+        const r = big ? 8 + Math.random() * (STONE_MAX - 8) : STONE_MIN + Math.random() * 4;
+        stones.add(makeStone(cx + (Math.random() - 0.5) * src.w * 0.3, viewY0 - r - 10 - i * 18 - Math.random() * 30,
+          r, (Math.random() - 0.5) * 1.5 + wind * 0.3, 1 + Math.random() * 2));
+      }
+    }
+
+    function setMode(m: 'rain' | 'stones') {
+      mode = m; jetOn = false; holding = false;
+      for (const [id, on] of [['mode-rain', m === 'rain'], ['mode-stones', m === 'stones']] as const) {
+        const b = document.getElementById(id)!;
+        b.style.background = on ? 'rgba(20,19,18,0.85)' : 'transparent';
+        b.style.color = on ? '#ecebe6' : 'rgba(0,0,0,0.7)';
+      }
+    }
+    setMode('rain');
+
+    function gust() {
+      gustT = 110;
+      windTarget = (Math.random() < 0.5 ? -1 : 1) * (2.2 + Math.random() * 1.2);
+    }
+
+    const rainRange = document.getElementById('rain-range') as HTMLInputElement;
+    const rainLabel = document.getElementById('rain-label')!;
+    rainRange.addEventListener('input', () => {
+      rainMul = parseFloat(rainRange.value);
+      rainLabel.textContent = `rain: ${rainMul.toFixed(2)}`;
+    });
+    document.getElementById('reset-btn')!.addEventListener('click', reset);
+    document.getElementById('gust-btn')!.addEventListener('click', gust);
+    document.getElementById('rockfall-btn')!.addEventListener('click', () => rockfall());
+    document.getElementById('mode-rain')!.addEventListener('click', () => setMode('rain'));
+    document.getElementById('mode-stones')!.addEventListener('click', () => setMode('stones'));
+    window.addEventListener('keydown', (e) => {
+      const t = e.target as HTMLElement;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
+      if (e.key === 'r' || e.key === 'R') reset();
+      if (e.key === 'g' || e.key === 'G') gust();
+      if (e.key === 'f' || e.key === 'F') rockfall();
+      if (e.key === '1') setMode('rain');
+      if (e.key === '2') setMode('stones');
+    });
+
+    // ── loop ──────────────────────────────────────────────────────────────
+    function weather() {
+      if (gustT > 0) { if (--gustT === 0) windTarget = windBase; }
+      else if (--nextGust <= 0) { gust(); nextGust = 420 + Math.random() * 600; }
+      if (frameNo % 240 === 0) { windBase = (Math.random() - 0.5) * 0.7; if (gustT === 0) windTarget = windBase; }
+      wind += (windTarget - wind) * 0.03;
+
+      // sediment strata: the colour of what settles drifts in bands over time
+      if (++layerTimer > 150) { layerTimer = 0; layerTone = 30 + Math.random() * 110; }
+
+      if (--nextRockfall <= 0) {
+        rockfall(1 + Math.floor(Math.random() * 3));
+        nextRockfall = ROCKFALL_EVERY[0] + Math.random() * (ROCKFALL_EVERY[1] - ROCKFALL_EVERY[0]);
+      }
+
+      // storms come in waves
+      const surge = 0.75 + 0.5 * Math.sin(frameNo * 0.006) + (gustT > 0 ? 0.6 : 0);
+      // widen the spawn band upwind so slanted rain still covers the whole screen
+      const drift = wind * ((gh - viewY0) / (TERMINAL * 0.8));
+      const x0 = viewX0 - 30 - Math.max(0, drift), x1 = viewX1 + 30 - Math.min(0, drift);
+      const span = x1 - x0;
+      const n = RAIN * rainMul * surge * (span / (viewX1 - viewX0 + 60));
+      for (let i = 0; i < n; i++) {
+        spawnDrop(x0 + Math.random() * span, viewY0 - Math.random() * 20,
+          wind, TERMINAL * (0.6 + Math.random() * 0.4), 0);
+      }
+    }
+
+    function frame() {
+      frameNo++;
+      weather();
+      if (jetOn) jet();
+      stepWater();
+      stepSpray();
+      stepChunks();
+      stones.step();
+      if (holding) holdFrames++;
+      for (let p = 0; p < SAND_PASSES; p++) stepSand();
+      if (rockDirty && frameNo % SUPPORT_EVERY === 0) { rockDirty = false; checkSupport(); }
+      render();
+      requestAnimationFrame(frame);
+    }
+    reset();
+    frame();
+  }
+
+  main();
+</script>
