@@ -1,0 +1,373 @@
+---
+---
+
+<canvas id="c" style="position:fixed;inset:0;display:block;background:#ecebe6;cursor:pointer;touch-action:none;"></canvas>
+
+<script>
+  import { loadInk, fullCanvas, fitRect, boxBlur, rng, PAPER, INK_RGB } from '../../lib/ink';
+
+  // ── Shard generation ─────────────────────────────────────────────
+  const SEEDS = 34;          // fewer, larger pieces
+  const SEED_SPACING = 0.6;  // min seed distance as a fraction of the mean cell size
+  const WARP = 14;           // drawing px: how much the seams wander
+  const SHADOW_BLUR = 7;     // drawing px
+
+  // ── Ritual timeline (seconds) ────────────────────────────────────
+  const CRACK = 1.8;         // seams open, spreading out from the click
+  const RISE = 6.0;          // pieces lift into the column
+  const RETURN = 7.0;        // pieces glide home
+  const HEAL = 2.2;          // seams close
+  const CLICK_SUSPEND = 7.0; // how long a plain click keeps them aloft
+  const LONG_PRESS = 0.6;    // a press longer than this keeps them up until release
+  const RELEASE_PAUSE = 1.0;
+
+  // ── Levitation pose ──────────────────────────────────────────────
+  const SPREAD_X = 1.5;      // horizontal widening of the column
+  const SPREAD_Y = 1.02;
+  const LIFT = 0.022;        // fraction of viewport height
+  const DEPTH = 0.32;        // orbit depth relative to the drawing width
+  const ORBIT = (Math.PI * 2) / 70; // rad/s around the invisible vertical axis
+  const TWIST = 0.35;        // upper pieces orbit a bit faster than lower ones
+  const DEPTH_SCALE = 0.12;
+  const BOB = 5;             // px, breathing hover per piece
+  const GAP = 2.5;           // px, how far pieces part during the crack
+
+  // ── Stirring and dust ────────────────────────────────────────────
+  const STIR_RADIUS = 170;
+  const STIR_GAIN = 0.05;
+  const STIR_SPRING = 0.0025;
+  const STIR_DAMP = 0.965;
+  const DUST_MAX = 900;
+
+  const easeInOut = (x: number) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+  const easeOut = (x: number) => 1 - Math.pow(1 - x, 3);
+  const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+
+  // Smooth value noise for warping the seams
+  function makeNoise(rand: () => number) {
+    const N = 256, tbl = new Float32Array(N * N);
+    for (let i = 0; i < tbl.length; i++) tbl[i] = rand() * 2 - 1;
+    const at = (x: number, y: number) => tbl[(((y % N) + N) % N) * N + (((x % N) + N) % N)];
+    return (x: number, y: number) => {
+      const xi = Math.floor(x), yi = Math.floor(y);
+      let fx = x - xi, fy = y - yi;
+      fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+      const a = at(xi, yi), b = at(xi + 1, yi), c = at(xi, yi + 1), d = at(xi + 1, yi + 1);
+      return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
+    };
+  }
+
+  type Shard = {
+    body: HTMLCanvasElement;   // ink minus its seam band
+    edge: HTMLCanvasElement;   // just the seam band (fades out to crack)
+    shadow: HTMLCanvasElement; // blurred silhouette, padded by SHADOW_BLUR*2
+    cx: number; cy: number; bw: number; bh: number; // center + size in drawing px
+    dust: Float32Array;        // local ink pixel offsets for shedding dust
+    seed: number;
+    delay: number;             // 0..1, distance from the click
+    theta0: number; radius: number; twist: number;
+    tilt: number; tumble: number;
+    ox: number; oy: number; ovx: number; ovy: number; oa: number; ova: number; // stir
+    px: number; py: number;    // last screen position, for dust velocity
+    x: number; y: number; z: number; ang: number; sc: number; sx: number; u: number; cr: number;
+  };
+
+  async function main() {
+    const canvas = document.getElementById('c') as HTMLCanvasElement;
+    const { w, h, ink } = await loadInk();
+    const rand = rng(4128);
+    const noise = makeNoise(rand);
+
+    // Seeds follow the stroke structure: sampled by blurred ink density, kept apart
+    const dens = boxBlur(ink, w, h, 18);
+    const minD = Math.sqrt((w * h) / SEEDS) * SEED_SPACING;
+    const sx: number[] = [], sy: number[] = [];
+    for (let tries = 0; sx.length < SEEDS && tries < 40000; tries++) {
+      const x = rand() * w, y = rand() * h;
+      if (rand() > dens[(y | 0) * w + (x | 0)] * 3 + 0.04) continue;
+      if (sx.some((ax, i) => (ax - x) ** 2 + (sy[i] - y) ** 2 < minD * minD)) continue;
+      sx.push(x); sy.push(y);
+    }
+    const K = sx.length;
+
+    // Domain-warped Voronoi so seams wander like real cracks
+    const owner = new Int16Array(w * h);
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const wx = x + WARP * (noise(x / 45, y / 45) + 0.35 * noise(x / 9 + 50, y / 9));
+        const wy = y + WARP * (noise(x / 45 + 100, y / 45) + 0.35 * noise(x / 9, y / 9 + 50));
+        let best = 0, bd = Infinity;
+        for (let k = 0; k < K; k++) {
+          const d = (wx - sx[k]) ** 2 + (wy - sy[k]) ** 2;
+          if (d < bd) { bd = d; best = k; }
+        }
+        owner[y * w + x] = best;
+      }
+    const isSeam = (i: number, x: number, y: number) => {
+      const o = owner[i];
+      return (x > 0 && owner[i - 1] !== o) || (x < w - 1 && owner[i + 1] !== o) ||
+        (y > 0 && owner[i - w] !== o) || (y < h - 1 && owner[i + w] !== o);
+    };
+
+    const minX = new Array(K).fill(w), minY = new Array(K).fill(h);
+    const maxX = new Array(K).fill(-1), maxY = new Array(K).fill(-1);
+    const inkSum = new Array(K).fill(0);
+    for (let i = 0; i < w * h; i++) {
+      const k = owner[i], x = i % w, y = (i / w) | 0;
+      if (ink[i] < 0.02) continue;
+      minX[k] = Math.min(minX[k], x); maxX[k] = Math.max(maxX[k], x);
+      minY[k] = Math.min(minY[k], y); maxY[k] = Math.max(maxY[k], y);
+      inkSum[k] += ink[i];
+    }
+
+    const fcx = w / 2, fcy = h / 2;
+    const shards: Shard[] = [];
+    for (let k = 0; k < K; k++) {
+      if (inkSum[k] <= 0) continue;
+      const bw = maxX[k] - minX[k] + 1, bh = maxY[k] - minY[k] + 1;
+      const mk = (cw: number, ch: number) => {
+        const c = document.createElement('canvas'); c.width = cw; c.height = ch; return c;
+      };
+      const body = mk(bw, bh), edge = mk(bw, bh);
+      const bctx = body.getContext('2d')!, ectx = edge.getContext('2d')!;
+      const bd = bctx.createImageData(bw, bh), ed = ectx.createImageData(bw, bh);
+      const dustPts: number[] = [];
+      for (let y = 0; y < bh; y++)
+        for (let x = 0; x < bw; x++) {
+          const gx = x + minX[k], gy = y + minY[k], i = gy * w + gx;
+          if (owner[i] !== k || ink[i] < 0.02) continue;
+          const tgt = isSeam(i, gx, gy) ? ed.data : bd.data;
+          const p = (y * bw + x) * 4;
+          tgt[p] = INK_RGB[0]; tgt[p + 1] = INK_RGB[1]; tgt[p + 2] = INK_RGB[2];
+          tgt[p + 3] = ink[i] * 255;
+          if (ink[i] > 0.5 && rand() < 0.08) dustPts.push(x - bw / 2, y - bh / 2);
+        }
+      bctx.putImageData(bd, 0, 0);
+      ectx.putImageData(ed, 0, 0);
+
+      const pad = SHADOW_BLUR * 2;
+      const shadow = mk(bw + pad * 2, bh + pad * 2);
+      const sctx = shadow.getContext('2d')!;
+      sctx.filter = `blur(${SHADOW_BLUR}px)`;
+      sctx.drawImage(body, pad, pad);
+      sctx.drawImage(edge, pad, pad);
+
+      // Orbit placement: at phase 0 the piece sits at its widened home x
+      const cx = minX[k] + bw / 2, cy = minY[k] + bh / 2;
+      const dxExp = (cx - fcx) * SPREAD_X;
+      const z0 = (rand() * 2 - 1) * DEPTH * w;
+      shards.push({
+        body, edge, shadow, cx, cy, bw, bh,
+        dust: new Float32Array(dustPts.length ? dustPts : [0, 0]),
+        seed: rand() * 1000, delay: 0,
+        theta0: Math.atan2(dxExp, z0), radius: Math.hypot(dxExp, z0),
+        twist: 1 + TWIST * (fcy - cy) / h,
+        tilt: (rand() * 2 - 1) * 0.3, tumble: 0.25 + rand() * 0.35,
+        ox: 0, oy: 0, ovx: 0, ovy: 0, oa: 0, ova: 0,
+        px: NaN, py: NaN, x: 0, y: 0, z: 0, ang: 0, sc: 1, sx: 1, u: 0, cr: 0,
+      });
+    }
+    const maxR = Math.max(...shards.map((s) => s.radius)) || 1;
+
+    let W = 0, H = 0;
+    const ctx = fullCanvas(canvas, (nw, nh) => { W = nw; H = nh; });
+
+    // ── Ritual state ──
+    type Phase = 'rest' | 'cracking' | 'rising' | 'suspended' | 'returning' | 'healing';
+    let phase: Phase = 'rest';
+    let c = 0;      // crack progress 0..1
+    let p = 0;      // levitation progress 0..1
+    let phi = 0;    // orbit phase
+    let suspendT = 0;
+    let held = false, pressAt = 0, releaseAt = 0, suspendMin = CLICK_SUSPEND;
+    let now = 0;
+
+    const pointer = { x: -1e4, y: -1e4, vx: 0, vy: 0, has: false };
+
+    function summon(mx: number, my: number) {
+      if (phase === 'rest') {
+        const r = fitRect(w, h, W, H);
+        const lx = (mx - r.x) / r.s, ly = (my - r.y) / r.s;
+        const ds = shards.map((s) => Math.hypot(s.cx - lx, s.cy - ly));
+        const dmax = Math.max(...ds) || 1;
+        shards.forEach((s, i) => (s.delay = ds[i] / dmax));
+        phi = 0;
+      }
+      if (phase === 'rest' || phase === 'healing') phase = 'cracking';
+      else if (phase === 'returning') phase = 'rising';
+      if (phase === 'suspended') suspendT = 0;
+    }
+
+    canvas.addEventListener('pointerdown', (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      held = true; pressAt = now;
+      pointer.x = e.clientX; pointer.y = e.clientY; pointer.has = true;
+      summon(e.clientX, e.clientY);
+    });
+    const release = () => {
+      if (!held) return;
+      held = false; releaseAt = now;
+      suspendMin = now - pressAt > LONG_PRESS ? 0 : CLICK_SUSPEND;
+    };
+    canvas.addEventListener('pointerup', release);
+    canvas.addEventListener('pointercancel', release);
+    canvas.addEventListener('pointermove', (e) => {
+      if (pointer.has) { pointer.vx += e.clientX - pointer.x; pointer.vy += e.clientY - pointer.y; }
+      pointer.x = e.clientX; pointer.y = e.clientY; pointer.has = true;
+    });
+    canvas.addEventListener('pointerleave', () => { if (!held) pointer.has = false; });
+
+    function step(dt: number) {
+      if (phase === 'cracking') {
+        c = Math.min(1, c + dt / CRACK);
+        if (c >= 1) phase = 'rising';
+      } else if (phase === 'rising') {
+        p = Math.min(1, p + dt / RISE);
+        if (p >= 1) { phase = 'suspended'; suspendT = 0; }
+      } else if (phase === 'suspended') {
+        suspendT += dt;
+        if (!held && suspendT >= suspendMin && now - releaseAt >= RELEASE_PAUSE) phase = 'returning';
+      } else if (phase === 'returning') {
+        p = Math.max(0, p - dt / RETURN);
+        if (p <= 0) phase = 'healing';
+      } else if (phase === 'healing') {
+        c = Math.max(0, c - dt / HEAL);
+        if (c <= 0) { phase = 'rest'; phi = 0; }
+      }
+      phi += dt * ORBIT * easeInOut(p);
+    }
+
+    // ── Ink dust ──
+    const dust = { x: new Float32Array(DUST_MAX), y: new Float32Array(DUST_MAX), vx: new Float32Array(DUST_MAX),
+      vy: new Float32Array(DUST_MAX), life: new Float32Array(DUST_MAX), max: new Float32Array(DUST_MAX), n: 0 };
+    let dustHead = 0;
+    function emit(x: number, y: number, vx: number, vy: number) {
+      const i = dustHead; dustHead = (dustHead + 1) % DUST_MAX;
+      dust.x[i] = x; dust.y[i] = y;
+      dust.vx[i] = vx * 0.25 + (Math.random() - 0.5) * 0.15;
+      dust.vy[i] = vy * 0.25 - Math.random() * 0.12;
+      dust.max[i] = dust.life[i] = 2.5 + Math.random() * 3;
+      dust.n = Math.min(DUST_MAX, dust.n + 1);
+    }
+
+    let last = performance.now();
+    function frame(tms: number) {
+      const dt = Math.min(0.05, (tms - last) / 1000);
+      last = tms; now += dt;
+      step(dt);
+
+      const r = fitRect(w, h, W, H);
+      const ccx = r.x + fcx * r.s, ccy = r.y + fcy * r.s;
+      const breath = Math.sin(now * (Math.PI * 2) / 8);
+      const pvx = pointer.vx, pvy = pointer.vy;
+      pointer.vx = pointer.vy = 0;
+
+      for (const s of shards) {
+        const cr = easeOut(clamp01((c - 0.55 * s.delay) / 0.45));
+        const u = easeInOut(clamp01((p - 0.4 * s.delay) / 0.6));
+        s.u = u;
+
+        const hx = r.x + s.cx * r.s, hy = r.y + s.cy * r.s;
+        // crack: part slightly away from the center
+        const gdx = hx - ccx, gdy = hy - ccy, gl = Math.hypot(gdx, gdy) || 1;
+        const gx = hx + (gdx / gl) * GAP * cr, gy = hy + (gdy / gl) * GAP * cr;
+
+        // levitation pose on the column
+        const th = s.theta0 + phi * s.twist;
+        const zn = Math.cos(th) * s.radius / maxR;
+        const lx = ccx + Math.sin(th) * s.radius * r.s;
+        const ly = ccy + (s.cy - fcy) * SPREAD_Y * (1 + 0.012 * breath) * r.s - LIFT * H +
+          Math.sin(now * 0.7 + s.seed) * BOB;
+
+        // stir: the cursor moves through the suspended pieces like a medium
+        if (pointer.has && u > 0) {
+          const d2 = (s.x - pointer.x) ** 2 + (s.y - pointer.y) ** 2;
+          const f = Math.exp(-d2 / (2 * STIR_RADIUS * STIR_RADIUS)) * u * STIR_GAIN;
+          s.ovx += pvx * f; s.ovy += pvy * f;
+          s.ova += (pvx * (pointer.y - s.y) - pvy * (pointer.x - s.x)) * f * 0.00004;
+        }
+        s.ovx = (s.ovx - s.ox * STIR_SPRING) * STIR_DAMP;
+        s.ovy = (s.ovy - s.oy * STIR_SPRING) * STIR_DAMP;
+        s.ova = (s.ova - s.oa * STIR_SPRING) * STIR_DAMP;
+        s.ox += s.ovx; s.oy += s.ovy; s.oa += s.ova;
+
+        s.x = gx + (lx - gx) * u + s.ox;
+        s.y = gy + (ly - gy) * u + s.oy;
+        s.z = zn * u;
+        s.sc = 1 + DEPTH_SCALE * zn * u;
+        s.ang = u * (s.tilt + 0.18 * Math.sin(now * 0.23 + s.seed)) + s.oa;
+        s.sx = 1 - u * s.tumble * (0.5 - 0.5 * Math.cos(now * 0.17 + s.seed * 1.3)) * 0.7;
+
+        // shed dust from moving or hovering pieces
+        if (u > 0.01 && !Number.isNaN(s.px)) {
+          const speed = Math.hypot(s.x - s.px, s.y - s.py);
+          const rate = Math.min(1, speed * 0.08) + 0.006;
+          for (let q = rate; q > 0; q--) {
+            if (q < 1 && Math.random() > q) break;
+            const j = (Math.random() * (s.dust.length / 2)) | 0;
+            const ca = Math.cos(s.ang), sa = Math.sin(s.ang), k = r.s * s.sc;
+            const dx = s.dust[j * 2] * k * s.sx, dy = s.dust[j * 2 + 1] * k;
+            emit(s.x + dx * ca - dy * sa, s.y + dx * sa + dy * ca, s.x - s.px, s.y - s.py);
+          }
+        }
+        s.px = s.x; s.py = s.y;
+        s.cr = cr;
+      }
+
+      // ── Draw ──
+      ctx.fillStyle = PAPER;
+      ctx.fillRect(0, 0, W, H);
+
+      // soft shadows on the paper beneath lifted pieces
+      for (const s of shards) {
+        if (s.u < 0.01) continue;
+        const k = r.s * s.sc, pad = SHADOW_BLUR * 2;
+        ctx.globalAlpha = 0.1 * s.u * (0.7 + 0.3 * s.z);
+        ctx.save();
+        ctx.translate(s.x + 6 * s.u, s.y + 30 * s.u + LIFT * H * s.u * 0.5);
+        ctx.rotate(s.ang);
+        ctx.scale(s.sx * 1.05, 0.9);
+        ctx.drawImage(s.shadow, (-s.bw / 2 - pad) * k, (-s.bh / 2 - pad) * k, s.shadow.width * k, s.shadow.height * k);
+        ctx.restore();
+      }
+
+      // ash
+      ctx.fillStyle = `rgb(${INK_RGB[0]},${INK_RGB[1]},${INK_RGB[2]})`;
+      for (let i = 0; i < dust.n; i++) {
+        if (dust.life[i] <= 0) continue;
+        dust.life[i] -= dt;
+        dust.vx[i] = dust.vx[i] * 0.985 + Math.sin(now * 0.8 + i) * 0.004;
+        dust.vy[i] = dust.vy[i] * 0.985 - 0.0035;
+        dust.x[i] += dust.vx[i]; dust.y[i] += dust.vy[i];
+        const f = dust.life[i] / dust.max[i];
+        ctx.globalAlpha = 0.45 * f * Math.min(1, (1 - f) * 8);
+        const sz = 0.8 + 1.2 * f;
+        ctx.fillRect(dust.x[i], dust.y[i], sz, sz);
+      }
+
+      // pieces, back to front
+      const order = shards.slice().sort((a, b) => a.z - b.z);
+      for (const s of order) {
+        const k = r.s * s.sc;
+                ctx.save();
+        ctx.translate(s.x, s.y);
+        ctx.rotate(s.ang);
+        ctx.scale(s.sx, 1);
+        const dx = (-s.bw / 2) * k, dy = (-s.bh / 2) * k, dw = s.bw * k, dh = s.bh * k;
+        ctx.globalAlpha = 1 - 0.35 * s.u * (1 - s.z) * 0.5;
+        ctx.drawImage(s.body, dx, dy, dw, dh);
+        if (s.cr < 1) {
+          ctx.globalAlpha *= 1 - s.cr;
+          ctx.drawImage(s.edge, dx, dy, dw, dh);
+        }
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+  }
+
+  main();
+</script>
