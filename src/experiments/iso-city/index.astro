@@ -1,13 +1,13 @@
 ---
 ---
 
-<canvas id="canvas" style="display:block;width:100%;height:100%;background:#0a0a0f;"></canvas>
+<canvas id="canvas" style="display:block;width:100%;height:100%;background:#0a0a0f;touch-action:none;cursor:crosshair;"></canvas>
 
 <!-- Controls panel -->
 <div id="controls" style="position:fixed;top:64px;right:24px;font-family:monospace;font-size:11px;color:rgba(255,255,255,0.7);display:flex;flex-direction:column;gap:8px;min-width:180px;">
   <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:2px;">
     <span style="font-size:12px;color:rgba(255,255,255,0.9);letter-spacing:0.06em;">CITY</span>
-    <span style="font-size:10px;color:rgba(255,255,255,0.4);line-height:1.4;">select a layout</span>
+    <span style="font-size:10px;color:rgba(255,255,255,0.4);line-height:1.4;">layout and bowling ball</span>
   </div>
   <select id="city-select" style="background:#000;border:1px solid rgba(255,255,255,0.3);color:rgba(255,255,255,0.8);font-family:monospace;font-size:11px;padding:4px 6px;cursor:pointer;width:100%;">
     <option value="grid">Grid City</option>
@@ -18,6 +18,11 @@
     <span id="speed-label">ball speed: 1.0×</span>
     <input id="speed-range" type="range" min="0.5" max="3" step="0.1" value="1" style="accent-color:white;width:100%;" />
   </label>
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="mass-label">ball mass: 1.5</span>
+    <input id="mass-range" type="range" min="0.5" max="4" step="0.1" value="1.5" style="accent-color:white;width:100%;" />
+  </label>
+  <span id="score-label" style="color:rgba(255,255,255,0.5);">toppled: 0 / 0</span>
 </div>
 
 <div style="position:fixed;bottom:24px;right:24px;display:flex;gap:8px;">
@@ -26,792 +31,977 @@
 
 <script>
 // ─── Isometric City ────────────────────────────────────────────────────────
-// Coordinate system: isometric 2D on canvas.
-//   World (wx, wy) → screen (sx, sy):
-//     sx = ox + (wx - wy) * TW/2
-//     sy = oy + (wx + wy) * TH/2
-//   where TW=tile width, TH=tile height (TH = TW/2 for classic 2:1 iso)
+// World: x, y on the ground, z up. 2:1 isometric projection with scale K:
+//   sx = OX + (x - y) * K
+//   sy = OY + (x + y) * K / 2 - z * K
+// The camera looks along -(1,1,1): faces whose normal points toward +(1,1,1)
+// are visible, and larger x + y + z is nearer to the viewer.
 //
-// Physics: simple impulse + friction. Buildings topple when hit.
+// Buildings are rigid boxes that topple about one bottom edge (1-DOF hinge).
+// The ball is a sphere colliding with each box in the box's own rotated frame.
+// Physics runs at a fixed 120 Hz step. See README.md.
 // ─────────────────────────────────────────────────────────────────────────
+
+type V2 = [number, number];
+type V3 = [number, number, number];
 
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
-let W = window.innerWidth, H = window.innerHeight;
-canvas.width = W; canvas.height = H;
+let W = 0, H = 0, dpr = 1;
 
-window.addEventListener('resize', () => {
-  W = window.innerWidth; H = window.innerHeight;
-  canvas.width = W; canvas.height = H;
-});
+// ── Projection ────────────────────────────────────────────────────────────
+let K = 40;          // px per world unit (tile is 2K × K)
+let OX = 0, OY = 0;  // screen position of world origin
 
-// ── Iso projection ────────────────────────────────────────────────────────
-const TW = 80;  // tile width in pixels
-const TH = 40;  // tile height (TW/2)
-let OX = W / 2; // origin x (world 0,0 maps here)
-let OY = H * 0.28; // origin y
-
-function toScreen(wx: number, wy: number): [number, number] {
-  return [
-    OX + (wx - wy) * TW / 2,
-    OY + (wx + wy) * TH / 2,
-  ];
+function proj(x: number, y: number, z: number): V2 {
+  return [OX + (x - y) * K, OY + (x + y) * K / 2 - z * K];
 }
 
-function fromScreen(sx: number, sy: number): [number, number] {
-  const dx = sx - OX, dy = sy - OY;
-  return [
-    (dx / (TW / 2) + dy / (TH / 2)) / 2,
-    (dy / (TH / 2) - dx / (TW / 2)) / 2,
-  ];
+// Inverse projection onto the horizontal plane at height z
+function unproj(sx: number, sy: number, z: number): V2 {
+  const a = (sx - OX) / K;               // x - y
+  const b = (sy - OY + z * K) * 2 / K;   // x + y
+  return [(a + b) / 2, (b - a) / 2];
 }
 
-// ── City layouts ─────────────────────────────────────────────────────────
-type BuildingDef = { gx: number; gy: number; floors: number; w: number; d: number };
-type BlockDef = { road: boolean };
-type CarPath = [number, number][];
+// ── Helpers ───────────────────────────────────────────────────────────────
+const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
 
-interface CityDef {
-  blocks: BuildingDef[];
-  carPaths: CarPath[];
+function mulberry32(a: number) {
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
-// Grid 4x4 blocks with cross streets
-function makeGridCity(): CityDef {
-  const blocks: BuildingDef[] = [];
-  const BLOCK = 2.5, STREET = 1.0;
-  const COLS = 4, ROWS = 4;
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      const baseX = c * (BLOCK + STREET) + 0.4;
-      const baseY = r * (BLOCK + STREET) + 0.4;
-      const count = 2 + Math.floor(seededRand(r * 10 + c) * 3);
-      for (let i = 0; i < count; i++) {
-        const ox = seededRand(r * 100 + c * 10 + i * 3) * 1.5;
-        const oy = seededRand(r * 100 + c * 10 + i * 3 + 1) * 1.5;
-        blocks.push({
-          gx: baseX + ox,
-          gy: baseY + oy,
-          floors: 1 + Math.floor(seededRand(r * 100 + c * 10 + i) * 5),
-          w: 0.45 + seededRand(r * 100 + c * 10 + i + 5) * 0.35,
-          d: 0.45 + seededRand(r * 100 + c * 10 + i + 6) * 0.35,
-        });
-      }
-    }
-  }
-
-  // Car paths along streets
-  const S = BLOCK + STREET;
-  const carPaths: CarPath[] = [
-    // horizontal top
-    [[0, 0], [S*4, 0], [S*4, S], [0, S], [0, 0]],
-    [[0, S*2], [S*4, S*2], [S*4, S*3], [0, S*3], [0, S*2]],
-    // vertical
-    [[0.5, 0], [0.5, S*4], [S+0.5, S*4], [S+0.5, 0], [0.5, 0]],
-    [[S*2+0.5, 0], [S*2+0.5, S*4], [S*3+0.5, S*4], [S*3+0.5, 0], [S*2+0.5, 0]],
-  ];
-  return { blocks, carPaths };
-}
-
-// Diagonal/staggered city
-function makeDiagonalCity(): CityDef {
-  const blocks: BuildingDef[] = [];
-  const positions: [number, number][] = [
-    [0,0],[2,0],[4,0],[6,0],[8,0],
-    [1,1.5],[3,1.5],[5,1.5],[7,1.5],
-    [0,3],[2,3],[4,3],[6,3],[8,3],
-    [1,4.5],[3,4.5],[5,4.5],[7,4.5],
-    [0,6],[2,6],[4,6],[6,6],[8,6],
-  ];
-  positions.forEach(([bx, by], i) => {
-    const count = 1 + Math.floor(seededRand(i * 7) * 3);
-    for (let j = 0; j < count; j++) {
-      blocks.push({
-        gx: bx + 0.2 + seededRand(i * 13 + j) * 0.9,
-        gy: by + 0.2 + seededRand(i * 13 + j + 1) * 0.9,
-        floors: 1 + Math.floor(seededRand(i * 13 + j + 2) * 6),
-        w: 0.4 + seededRand(i * 13 + j + 3) * 0.3,
-        d: 0.4 + seededRand(i * 13 + j + 4) * 0.3,
-      });
-    }
-  });
-  const carPaths: CarPath[] = [
-    [[1,0],[9,0],[9,3],[1,3],[1,0]],
-    [[0,1.5],[9,1.5],[9,6],[0,6],[0,1.5]],
-    [[1,4.5],[9,4.5],[9,7.5],[1,7.5],[1,4.5]],
-  ];
-  return { blocks, carPaths };
-}
-
-// Ring/plaza city
-function makeRingCity(): CityDef {
-  const blocks: BuildingDef[] = [];
-  // Outer ring
-  const outerAngles = 8;
-  const R = 4.5;
-  for (let i = 0; i < outerAngles; i++) {
-    const angle = (i / outerAngles) * Math.PI * 2;
-    const cx = 5 + Math.cos(angle) * R;
-    const cy = 5 + Math.sin(angle) * R;
-    const count = 2 + Math.floor(seededRand(i * 9) * 3);
-    for (let j = 0; j < count; j++) {
-      blocks.push({
-        gx: cx + (seededRand(i * 20 + j) - 0.5) * 1.2,
-        gy: cy + (seededRand(i * 20 + j + 1) - 0.5) * 1.2,
-        floors: 1 + Math.floor(seededRand(i * 20 + j + 2) * 7),
-        w: 0.4 + seededRand(i * 20 + j + 3) * 0.35,
-        d: 0.4 + seededRand(i * 20 + j + 4) * 0.35,
-      });
-    }
-  }
-  // Inner cluster
-  for (let i = 0; i < 4; i++) {
-    blocks.push({
-      gx: 4 + seededRand(i * 3) * 2,
-      gy: 4 + seededRand(i * 3 + 1) * 2,
-      floors: 3 + Math.floor(seededRand(i * 3 + 2) * 5),
-      w: 0.5, d: 0.5,
-    });
-  }
-  const carPaths: CarPath[] = [
-    [[5,1],[9,5],[5,9],[1,5],[5,1]],
-    [[5,0.5],[9.5,5],[5,9.5],[0.5,5],[5,0.5]],
-  ];
-  return { blocks, carPaths };
-}
-
-// ── Seeded random (deterministic layouts) ────────────────────────────────
-function seededRand(seed: number): number {
-  const x = Math.sin(seed + 1) * 43758.5453;
+function hash(n: number) {
+  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
   return x - Math.floor(x);
 }
 
-// ── Types ─────────────────────────────────────────────────────────────────
+// ── City layouts ──────────────────────────────────────────────────────────
+interface BuildingDef { cx: number; cy: number; hx: number; hy: number; floors: number }
+interface Road { a: V2; b: V2; w: number }
+interface CityDef {
+  buildings: BuildingDef[];
+  roads: Road[];
+  loops: V2[][];                          // car routes, already offset into their lane
+  lots: [number, number, number, number][]; // sidewalk rectangles x0,y0,x1,y1
+  bounds: [number, number, number, number];
+}
+
+const STREET = 1.0;
+const LANE = 0.24;  // lane offset from the street centreline (right-hand traffic)
+
+function rect(x0: number, y0: number, x1: number, y1: number): V2[] {
+  return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]; // counter-clockwise
+}
+
+function circle(r: number, n = 40): V2[] {
+  const pts: V2[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    pts.push([Math.cos(a) * r, Math.sin(a) * r]);
+  }
+  return pts;
+}
+
+// Offset a closed route to the right of its travel direction, so routes that
+// share a street in opposite directions use opposite lanes.
+function lane(poly: V2[], off = LANE): V2[] {
+  const n = poly.length;
+  return poly.map((p, i) => {
+    const a = poly[(i - 1 + n) % n], b = poly[(i + 1) % n];
+    let d1x = p[0] - a[0], d1y = p[1] - a[1];
+    let d2x = b[0] - p[0], d2y = b[1] - p[1];
+    const l1 = Math.hypot(d1x, d1y) || 1, l2 = Math.hypot(d2x, d2y) || 1;
+    d1x /= l1; d1y /= l1; d2x /= l2; d2y /= l2;
+    let mx = d1y + d2y, my = -d1x - d2x;
+    const ml = Math.hypot(mx, my) || 1;
+    mx /= ml; my /= ml;
+    const s = off / Math.max(0.35, mx * d1y - my * d1x);
+    return [p[0] + mx * s, p[1] + my * s] as V2;
+  });
+}
+
+function roadsOf(poly: V2[], w = STREET): Road[] {
+  return poly.map((p, i) => ({ a: p, b: poly[(i + 1) % poly.length], w }));
+}
+
+function fits(list: BuildingDef[], b: BuildingDef, gap: number) {
+  return list.every((o) => Math.abs(o.cx - b.cx) >= o.hx + b.hx + gap || Math.abs(o.cy - b.cy) >= o.hy + b.hy + gap);
+}
+
+// Fill a square block with up to 2×2 buildings, one per lot. Taller near the city centre.
+function fillBlock(out: BuildingDef[], x0: number, y0: number, size: number, rng: () => number, centre: V2, radius: number) {
+  const lot = size / 2;
+  for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
+    if (rng() < 0.1) continue; // empty lot
+    const hx = 0.28 + rng() * 0.22, hy = 0.28 + rng() * 0.22;
+    const fx = lot / 2 - 0.1 - hx, fy = lot / 2 - 0.1 - hy;
+    const cx = x0 + (i + 0.5) * lot + (rng() * 2 - 1) * fx;
+    const cy = y0 + (j + 0.5) * lot + (rng() * 2 - 1) * fy;
+    const near = 1 - clamp(Math.hypot(cx - centre[0], cy - centre[1]) / radius, 0, 1);
+    out.push({ cx, cy, hx, hy, floors: 1 + Math.floor(rng() * (3 + 5 * near)) });
+  }
+}
+
+function makeGridCity(): CityDef {
+  const rng = mulberry32(11);
+  const N = 4, BLOCK = 2.6, S = BLOCK + STREET;
+  const X: number[] = [-STREET / 2];
+  for (let c = 0; c < N; c++) X.push(c * S + BLOCK + STREET / 2);
+  const lo = X[0], hi = X[N], mid = (lo + hi) / 2;
+
+  const buildings: BuildingDef[] = [];
+  const lots: CityDef['lots'] = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    lots.push([c * S, r * S, c * S + BLOCK, r * S + BLOCK]);
+    fillBlock(buildings, c * S, r * S, BLOCK, rng, [mid, mid], hi * 0.75);
+  }
+  const roads: Road[] = [];
+  for (const v of X) {
+    roads.push({ a: [v, lo], b: [v, hi], w: STREET });
+    roads.push({ a: [lo, v], b: [hi, v], w: STREET });
+  }
+  const perim = rect(lo, lo, hi, hi), inner = rect(X[1], X[1], X[3], X[3]);
+  const loops = [lane(perim), lane([...perim].reverse()), lane(inner), lane([...inner].reverse())];
+  return { buildings, roads, loops, lots, bounds: [lo - 0.5, lo - 0.5, hi + 0.5, hi + 0.5] };
+}
+
+// Staggered rows of blocks, like brickwork. Cars loop around each row.
+function makeDiagonalCity(): CityDef {
+  const rng = mulberry32(23);
+  const ROWS = 5, COLS = 4, BLOCK = 2.4, S = BLOCK + STREET;
+  const Y: number[] = [-STREET / 2];
+  for (let r = 0; r < ROWS; r++) Y.push(r * S + BLOCK + STREET / 2);
+  const xw = -STREET / 2, xe = S / 2 + (COLS - 1) * S + BLOCK + STREET / 2;
+  const centre: V2 = [(xw + xe) / 2, (Y[0] + Y[ROWS]) / 2];
+
+  const buildings: BuildingDef[] = [];
+  const lots: CityDef['lots'] = [];
+  const roads: Road[] = [];
+  for (let r = 0; r < ROWS; r++) {
+    const off = (r % 2) * S / 2;
+    for (let c = 0; c < COLS; c++) {
+      const x0 = off + c * S, y0 = r * S;
+      lots.push([x0, y0, x0 + BLOCK, y0 + BLOCK]);
+      fillBlock(buildings, x0, y0, BLOCK, rng, centre, (xe - xw) * 0.6);
+      if (c < COLS - 1 || r % 2 === 0) {
+        const x = x0 + BLOCK + STREET / 2; // short cross street between blocks
+        roads.push({ a: [x, Y[r]], b: [x, Y[r + 1]], w: STREET });
+      }
+    }
+  }
+  for (const y of Y) roads.push({ a: [xw, y], b: [xe, y], w: STREET });
+  roads.push({ a: [xw, Y[0]], b: [xw, Y[ROWS]], w: STREET }, { a: [xe, Y[0]], b: [xe, Y[ROWS]], w: STREET });
+  const loops: V2[][] = [];
+  for (let r = 0; r < ROWS; r++) {
+    const loop = rect(xw, Y[r], xe, Y[r + 1]);
+    loops.push(lane(r % 2 ? loop.reverse() : loop));
+  }
+  return { buildings, roads, loops, lots, bounds: [xw - 0.5, Y[0] - 0.5, xe + 0.5, Y[ROWS] + 0.5] };
+}
+
+// Two ring roads joined by four spokes; towers in the central plaza.
+function makeRingCity(): CityDef {
+  const rng = mulberry32(37);
+  const R1 = 3.6, R2 = 7.4, HALF = STREET / 2;
+  const buildings: BuildingDef[] = [];
+  for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    buildings.push({ cx: sx * 1.15, cy: sy * 1.15, hx: 0.45, hy: 0.45, floors: 7 + Math.floor(rng() * 4) });
+  }
+  for (let tries = 0; tries < 600 && buildings.length < 34; tries++) {
+    const a = rng() * Math.PI * 2, r = R1 + 1 + rng() * (R2 - R1 - 2);
+    const b: BuildingDef = {
+      cx: Math.cos(a) * r, cy: Math.sin(a) * r,
+      hx: 0.26 + rng() * 0.22, hy: 0.26 + rng() * 0.22, floors: 1 + Math.floor(rng() * 5),
+    };
+    const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, v]) => Math.hypot(b.cx + u * b.hx, b.cy + v * b.hy));
+    const inBand = corners.every((d) => d > R1 + HALF + 0.15 && d < R2 - HALF - 0.15);
+    const offSpokes = Math.abs(b.cx) > b.hx + HALF + 0.15 && Math.abs(b.cy) > b.hy + HALF + 0.15;
+    if (inBand && offSpokes && fits(buildings, b, 0.18)) buildings.push(b);
+  }
+  const roads: Road[] = [...roadsOf(circle(R1)), ...roadsOf(circle(R2))];
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    roads.push({ a: [dx * R1, dy * R1], b: [dx * R2, dy * R2], w: STREET });
+  }
+  const loops = [lane(circle(R1)), lane(circle(R1).reverse()), lane(circle(R2)), lane(circle(R2).reverse())];
+  return { buildings, roads, loops, lots: [], bounds: [-R2 - 1, -R2 - 1, R2 + 1, R2 + 1] };
+}
+
+// ── Simulation state ──────────────────────────────────────────────────────
+const G = 18;            // gravity (world units / s²)
+const DENSITY = 0.5;     // building mass per unit volume (ball mass is the slider)
+const FLOOR_H = 0.55;    // world units per floor
+const BALL_R = 0.3;
+const E_BUILDING = 0.35; // ball ↔ building restitution
+const STEP = 1 / 120;    // fixed physics step
+
+const DIRS: V2[] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
 interface Building {
-  gx: number; gy: number;        // grid world position (center base)
-  w: number; d: number;          // footprint half-widths
-  floors: number;                // height in floors
-  alive: boolean;
-  // topple physics
-  angle: number;                 // tilt angle (radians)
-  angularVel: number;
-  tiltAxis: number;              // 0=toward viewer, 1=right, etc.
-  tiltAxisAngle: number;         // direction of tilt in world
-  hitTimer: number;              // flash timer
+  cx: number; cy: number; hx: number; hy: number; h: number; floors: number;
+  dir: number;           // toppling direction, index into DIRS
+  theta: number;         // tilt about the bottom edge on the `dir` side (0 = upright, π/2 = flat)
+  omega: number;
+  fallen: boolean;       // lying flat: static rubble
+  hit: number;           // flash timer
+  pal: number; seed: number;
 }
 
 interface Car {
-  pathIdx: number;
-  t: number;          // 0..1 along current segment
-  speed: number;
-  wx: number; wy: number;
-  vx: number; vy: number;
-  alive: boolean;
-  hitTimer: number;
-  color: string;
-  segIdx: number;
-  path: CarPath;
+  loop: number; s: number; v: number; vmax: number;
+  x: number; y: number; z: number; yaw: number;
+  state: 'drive' | 'debris' | 'wreck';
+  vx: number; vy: number; vz: number; spin: number; roll: number; rollV: number; squash: number;
+  color: number[]; hit: number;
 }
 
-interface Ball {
-  wx: number; wy: number;
-  vx: number; vy: number;
-  z: number; vz: number;   // z = height above ground
-  r: number;               // world radius
-  active: boolean;
-}
+interface Loop { pts: V2[]; cum: number[]; total: number }
 
-// ── State ─────────────────────────────────────────────────────────────────
+interface Ball { x: number; y: number; z: number; vx: number; vy: number; vz: number; active: boolean; still: number; alpha: number }
+
+interface Dust { x: number; y: number; z: number; vx: number; vy: number; vz: number; life: number; size: number }
+
+let city: CityDef;
 let buildings: Building[] = [];
 let cars: Car[] = [];
-let ball: Ball = { wx: -2, wy: -2, vx: 0, vy: 0, z: 0, vz: 0, r: 0.38, active: false };
-let speedMult = 1.0;
+let loops: Loop[] = [];
+let dust: Dust[] = [];
+let ball: Ball = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, active: false, still: 0, alpha: 0 };
+let speedMult = 1, ballMass = 1.5;
 let currentCity = 'grid';
+let toppled = 0;
 
-const FLOOR_H = 0.55;   // world units per floor
-const GRAVITY = -18;
-const FRICTION = 0.985;
-const ANGULAR_DAMPING = 0.92;
-const CAR_COLORS = ['#ff4444','#44aaff','#ffdd44','#44ff88','#ff88ff','#ff8844'];
-
-function buildCity(type: string) {
-  let def: CityDef;
-  if (type === 'diagonal') def = makeDiagonalCity();
-  else if (type === 'ring') def = makeRingCity();
-  else def = makeGridCity();
-
-  buildings = def.blocks.map(b => ({
-    gx: b.gx, gy: b.gy,
-    w: b.w, d: b.d,
-    floors: b.floors,
-    alive: true,
-    angle: 0, angularVel: 0,
-    tiltAxis: 0, tiltAxisAngle: 0,
-    hitTimer: 0,
-  }));
-
-  cars = [];
-  def.carPaths.forEach((path, pi) => {
-    const numCars = 1 + Math.floor(seededRand(pi * 17) * 2);
-    for (let i = 0; i < numCars; i++) {
-      const segIdx = Math.floor(seededRand(pi * 17 + i) * (path.length - 1));
-      const t = seededRand(pi * 17 + i + 1);
-      const [wx, wy] = interpPath(path, segIdx, t);
-      cars.push({
-        pathIdx: pi, t, speed: 0.018 + seededRand(pi * 17 + i + 2) * 0.014,
-        wx, wy, vx: 0, vy: 0,
-        alive: true, hitTimer: 0,
-        color: CAR_COLORS[Math.floor(seededRand(pi * 17 + i + 3) * CAR_COLORS.length)],
-        segIdx,
-        path,
-      });
-    }
-  });
-
-  resetBall();
-}
-
-function interpPath(path: CarPath, segIdx: number, t: number): [number, number] {
-  const a = path[segIdx % path.length];
-  const b = path[(segIdx + 1) % path.length];
-  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-}
-
-function resetBall() {
-  ball = { wx: -2, wy: -2, vx: 0, vy: 0, z: 0, vz: 0, r: 0.38, active: false };
-}
-
-// ── Drag to throw ─────────────────────────────────────────────────────────
-let dragStart: { sx: number; sy: number } | null = null;
-let dragCurrent: { sx: number; sy: number } | null = null;
-
-canvas.addEventListener('mousedown', (e) => {
-  dragStart = { sx: e.clientX, sy: e.clientY };
-  dragCurrent = { sx: e.clientX, sy: e.clientY };
-  ball.active = false;
-});
-canvas.addEventListener('mousemove', (e) => {
-  if (dragStart) dragCurrent = { sx: e.clientX, sy: e.clientY };
-});
-canvas.addEventListener('mouseup', (e) => {
-  if (dragStart) {
-    throwBall(e.clientX, e.clientY);
-    dragStart = null; dragCurrent = null;
-  }
-});
-
-canvas.addEventListener('touchstart', (e) => {
-  e.preventDefault();
-  const t = e.touches[0];
-  dragStart = { sx: t.clientX, sy: t.clientY };
-  dragCurrent = { sx: t.clientX, sy: t.clientY };
-  ball.active = false;
-}, { passive: false });
-canvas.addEventListener('touchmove', (e) => {
-  e.preventDefault();
-  if (dragStart) {
-    const t = e.touches[0];
-    dragCurrent = { sx: t.clientX, sy: t.clientY };
-  }
-}, { passive: false });
-canvas.addEventListener('touchend', (e) => {
-  e.preventDefault();
-  if (dragStart && e.changedTouches[0]) {
-    const t = e.changedTouches[0];
-    throwBall(t.clientX, t.clientY);
-    dragStart = null; dragCurrent = null;
-  }
-}, { passive: false });
-
-function throwBall(releaseX: number, releaseY: number) {
-  if (!dragStart) return;
-  // Convert screen positions to world coordinates
-  const [wx0, wy0] = fromScreen(dragStart.sx, dragStart.sy);
-  const [wx1, wy1] = fromScreen(releaseX, releaseY);
-  const wdx = wx0 - wx1;
-  const wdy = wy0 - wy1;
-  const speed = Math.sqrt(wdx * wdx + wdy * wdy) * speedMult * 2.5;
-  if (speed < 0.05) return;
-
-  // Launch from where the user started dragging
-  ball.wx = wx0;
-  ball.wy = wy0;
-  ball.z = 0.2;
-  ball.vx = wdx / 0.25 * speedMult;
-  ball.vy = wdy / 0.25 * speedMult;
-  ball.vz = Math.max(2, speed * 0.4);
-  ball.active = true;
-}
-
-// ── Physics update ────────────────────────────────────────────────────────
-function updateBall(dt: number) {
-  if (!ball.active) return;
-  ball.vz += GRAVITY * dt;
-  ball.wx += ball.vx * dt;
-  ball.wy += ball.vy * dt;
-  ball.z += ball.vz * dt;
-  ball.vx *= FRICTION;
-  ball.vy *= FRICTION;
-
-  if (ball.z <= 0) {
-    ball.z = 0;
-    ball.vz *= -0.25;
-    ball.vx *= 0.85;
-    ball.vy *= 0.85;
-    if (Math.abs(ball.vz) < 0.3) { ball.vz = 0; }
-  }
-
-  // Check building collisions
-  for (const b of buildings) {
-    if (!b.alive) continue;
-    if (b.angle > Math.PI * 0.45) continue; // already fallen
-    const h = b.floors * FLOOR_H;
-    const dx = ball.wx - b.gx;
-    const dy = ball.wy - b.gy;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    const hitRadius = Math.max(b.w, b.d) + ball.r;
-    if (dist < hitRadius && ball.z < h + ball.r && ball.z >= -0.3) {
-      // Hit!
-      b.hitTimer = 0.3;
-      const nx = dx / (dist + 0.001);
-      const ny = dy / (dist + 0.001);
-      const impulse = (ball.vx * nx + ball.vy * ny) * 0.6;
-      b.angularVel += impulse * 1.2 / (b.floors * 0.5 + 1);
-      b.tiltAxisAngle = Math.atan2(ny, nx);
-      // Reflect ball
-      ball.vx -= nx * impulse * 1.8;
-      ball.vy -= ny * impulse * 1.8;
-    }
-  }
-
-  // Check car collisions
-  for (const car of cars) {
-    if (!car.alive) continue;
-    const dx = ball.wx - car.wx;
-    const dy = ball.wy - car.wy;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < 0.55 + ball.r && ball.z < 0.6) {
-      car.alive = false;
-      car.hitTimer = 1.0;
-      // Kick car
-      car.vx = ball.vx * 0.6 + dx * 3;
-      car.vy = ball.vy * 0.6 + dy * 3;
-    }
-  }
-}
-
-function updateBuildings(dt: number) {
-  for (const b of buildings) {
-    if (!b.alive) continue;
-    b.hitTimer = Math.max(0, b.hitTimer - dt);
-    if (b.angularVel !== 0 || b.angle !== 0) {
-      b.angularVel *= ANGULAR_DAMPING;
-      b.angle += b.angularVel * dt;
-      if (b.angle > Math.PI * 0.5) {
-        b.angle = Math.PI * 0.5;
-        b.angularVel = 0;
-        b.alive = false; // fully toppled
-      }
-      if (b.angle < 0) { b.angle = 0; b.angularVel = 0; }
-    }
-  }
-}
-
-function updateCars(dt: number) {
-  for (const car of cars) {
-    car.hitTimer = Math.max(0, car.hitTimer - dt);
-    if (!car.alive) {
-      // Slide after hit
-      car.wx += car.vx * dt;
-      car.wy += car.vy * dt;
-      car.vx *= 0.9;
-      car.vy *= 0.9;
-      continue;
-    }
-    // Move along path
-    const path = car.path;
-    car.t += car.speed;
-    if (car.t >= 1) {
-      car.t -= 1;
-      car.segIdx = (car.segIdx + 1) % (path.length - 1);
-    }
-    const [nx, ny] = interpPath(path, car.segIdx, car.t);
-    car.vx = nx - car.wx;
-    car.vy = ny - car.wy;
-    car.wx = nx;
-    car.wy = ny;
-  }
-}
-
-// ── Draw helpers ──────────────────────────────────────────────────────────
-function isoTop(wx: number, wy: number, wz: number, w: number, d: number, fill: string, stroke: string) {
-  // Top face of a box at world (wx,wy) elevated by wz, half-extents w,d
-  const corners: [number, number][] = [
-    toScreen(wx - w, wy - d),
-    toScreen(wx + w, wy - d),
-    toScreen(wx + w, wy + d),
-    toScreen(wx - w, wy + d),
-  ].map(([sx, sy]) => [sx, sy - wz * TH]);
-
-  ctx.beginPath();
-  ctx.moveTo(corners[0][0], corners[0][1]);
-  for (let i = 1; i < 4; i++) ctx.lineTo(corners[i][0], corners[i][1]);
-  ctx.closePath();
-  ctx.fillStyle = fill;
-  ctx.fill();
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = 0.8;
-  ctx.stroke();
-}
-
-function isoBox(wx: number, wy: number, w: number, d: number, h: number,
-  colorTop: string, colorLeft: string, colorRight: string,
-  strokeColor: string, tilt = 0, tiltAngle = 0) {
-
-  const wz = h; // height in world units → pixel offset = wz * TH
-  // For tilt: rotate the box drawing around its base center
-  ctx.save();
-  const [baseSX, baseSY] = toScreen(wx, wy);
-  if (tilt !== 0) {
-    // tilt toward the iso-direction of tiltAngle
-    const [offsetX, offsetY] = [Math.cos(tiltAngle), Math.sin(tiltAngle)];
-    const [ex, ey] = toScreen(wx + offsetX, wy + offsetY);
-    const dirX = ex - baseSX, dirY = ey - baseSY;
-    const len = Math.sqrt(dirX * dirX + dirY * dirY);
-    ctx.translate(baseSX, baseSY);
-    ctx.rotate(Math.atan2(dirY, dirX));
-    ctx.transform(1, 0, 0, 1, 0, 0); // reset after rotate
-    // Actually: just apply a shear/scale for the tilt effect visually
-    ctx.rotate(-Math.atan2(dirY, dirX));
-    ctx.translate(-baseSX, -baseSY);
-  }
-
-  // Left face (front-left)
-  const BL = toScreen(wx - w, wy + d);
-  const BR = toScreen(wx + w, wy + d);
-  const FL = toScreen(wx - w, wy - d);
-
-  // For tilt, we'll offset the top vertices
-  const tiltOffsetX = tilt !== 0 ? Math.cos(tiltAngle) * tilt * TW * 0.5 : 0;
-  const tiltOffsetY = tilt !== 0 ? Math.sin(tiltAngle + Math.PI) * tilt * TH * 0.8 : 0;
-
-  const topBL: [number, number] = [BL[0] + tiltOffsetX, BL[1] - wz * TH + tiltOffsetY];
-  const topBR: [number, number] = [BR[0] + tiltOffsetX, BR[1] - wz * TH + tiltOffsetY];
-  const topFL: [number, number] = [FL[0] + tiltOffsetX, FL[1] - wz * TH + tiltOffsetY];
-  const topFR: [number, number] = toScreen(wx + w, wy - d);
-  const topFR_t: [number, number] = [topFR[0] + tiltOffsetX, topFR[1] - wz * TH + tiltOffsetY];
-
-  ctx.lineWidth = 0.8;
-  ctx.strokeStyle = strokeColor;
-
-  // Left face (wy+ side)
-  ctx.beginPath();
-  ctx.moveTo(BL[0], BL[1]);
-  ctx.lineTo(topBL[0], topBL[1]);
-  ctx.lineTo(topBR[0], topBR[1]);
-  ctx.lineTo(BR[0], BR[1]);
-  ctx.closePath();
-  ctx.fillStyle = colorLeft;
-  ctx.fill(); ctx.stroke();
-
-  // Right face (wx+ side)
-  ctx.beginPath();
-  ctx.moveTo(BR[0], BR[1]);
-  ctx.lineTo(topBR[0], topBR[1]);
-  ctx.lineTo(topFR_t[0], topFR_t[1]);
-  ctx.lineTo(topFR[0], topFR[1]);
-  ctx.closePath();
-  ctx.fillStyle = colorRight;
-  ctx.fill(); ctx.stroke();
-
-  // Top face
-  ctx.beginPath();
-  ctx.moveTo(topFL[0], topFL[1]);
-  ctx.lineTo(topBL[0], topBL[1]);
-  ctx.lineTo(topBR[0], topBR[1]);
-  ctx.lineTo(topFR_t[0], topFR_t[1]);
-  ctx.closePath();
-  ctx.fillStyle = colorTop;
-  ctx.fill(); ctx.stroke();
-
-  ctx.restore();
-}
-
-// ── Draw grid (streets + ground) ──────────────────────────────────────────
-function drawGround(cityType: string) {
-  // Dark base
-  ctx.fillStyle = '#0a0a0f';
-  ctx.fillRect(0, 0, W, H);
-
-  // Grid lines (streets)
-  const COLS = 12, ROWS = 12;
-  const offset = -1;
-  ctx.lineWidth = 1;
-
-  // Street fill strips
-  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-  for (let r = 0; r <= ROWS; r++) {
-    ctx.beginPath();
-    const [sx0, sy0] = toScreen(offset, offset + r);
-    const [sx1, sy1] = toScreen(offset + COLS, offset + r);
-    ctx.moveTo(sx0, sy0);
-    ctx.lineTo(sx1, sy1);
-    ctx.stroke();
-  }
-  for (let c = 0; c <= COLS; c++) {
-    ctx.beginPath();
-    const [sx0, sy0] = toScreen(offset + c, offset);
-    const [sx1, sy1] = toScreen(offset + c, offset + ROWS);
-    ctx.moveTo(sx0, sy0);
-    ctx.lineTo(sx1, sy1);
-    ctx.stroke();
-  }
-
-  // Ground fill
-  ctx.fillStyle = 'rgba(20,20,30,0.85)';
-  const [p0x, p0y] = toScreen(offset, offset);
-  const [p1x, p1y] = toScreen(offset + COLS, offset);
-  const [p2x, p2y] = toScreen(offset + COLS, offset + ROWS);
-  const [p3x, p3y] = toScreen(offset, offset + ROWS);
-  ctx.beginPath();
-  ctx.moveTo(p0x, p0y);
-  ctx.lineTo(p1x, p1y);
-  ctx.lineTo(p2x, p2y);
-  ctx.lineTo(p3x, p3y);
-  ctx.closePath();
-  ctx.fill();
-
-  // Street lines
-  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-  ctx.lineWidth = 1;
-  for (let r = 0; r <= ROWS; r++) {
-    ctx.beginPath();
-    const [sx0, sy0] = toScreen(offset, offset + r);
-    const [sx1, sy1] = toScreen(offset + COLS, offset + r);
-    ctx.moveTo(sx0, sy0); ctx.lineTo(sx1, sy1); ctx.stroke();
-  }
-  for (let c = 0; c <= COLS; c++) {
-    ctx.beginPath();
-    const [sx0, sy0] = toScreen(offset + c, offset);
-    const [sx1, sy1] = toScreen(offset + c, offset + ROWS);
-    ctx.moveTo(sx0, sy0); ctx.lineTo(sx1, sy1); ctx.stroke();
-  }
-}
-
-// ── Draw building ─────────────────────────────────────────────────────────
-const BUILDING_PALETTES = [
-  { top: '#2a2a3a', left: '#1a1a28', right: '#222232', win: 'rgba(180,220,255,0.35)' },
-  { top: '#1e2838', left: '#141e2e', right: '#192032', win: 'rgba(200,230,255,0.3)' },
-  { top: '#2a1e1e', left: '#1e1416', right: '#221618', win: 'rgba(255,180,100,0.35)' },
-  { top: '#1e2a1e', left: '#141e18', right: '#18221a', win: 'rgba(100,255,150,0.25)' },
+const CAR_COLORS = [[255, 80, 80], [70, 170, 255], [255, 220, 80], [80, 240, 140], [255, 140, 255], [255, 150, 70]];
+const PALETTES = [
+  { base: [52, 52, 74], win: 'rgba(180,220,255,0.55)' },
+  { base: [40, 54, 78], win: 'rgba(200,230,255,0.5)' },
+  { base: [70, 46, 46], win: 'rgba(255,190,110,0.55)' },
+  { base: [42, 64, 50], win: 'rgba(120,255,170,0.45)' },
 ];
 
-function drawBuilding(b: Building) {
-  const hit = b.hitTimer > 0;
-  const palette = BUILDING_PALETTES[Math.floor(seededRand(b.gx * 17 + b.gy) * BUILDING_PALETTES.length)];
+function buildCity(type: string) {
+  city = type === 'diagonal' ? makeDiagonalCity() : type === 'ring' ? makeRingCity() : makeGridCity();
+  buildings = city.buildings.map((d, i) => ({
+    ...d, h: d.floors * FLOOR_H, dir: 0, theta: 0, omega: 0, fallen: false, hit: 0,
+    pal: Math.floor(hash(i * 3.1) * PALETTES.length), seed: i * 17.3,
+  }));
+  loops = city.loops.map((pts) => {
+    const cum = [0];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      cum.push(cum[i] + Math.hypot(b[0] - a[0], b[1] - a[1]));
+    }
+    return { pts, cum, total: cum[pts.length] };
+  });
+  cars = [];
+  loops.forEach((lp, li) => {
+    const n = Math.max(1, Math.round(lp.total / 7));
+    const vmax = 1.4 + hash(li * 5.7) * 0.8;
+    for (let i = 0; i < n; i++) {
+      const car: Car = {
+        loop: li, s: ((i + hash(li)) / n) * lp.total, v: vmax, vmax,
+        x: 0, y: 0, z: 0, yaw: 0, state: 'drive',
+        vx: 0, vy: 0, vz: 0, spin: 0, roll: 0, rollV: 0, squash: 1,
+        color: CAR_COLORS[Math.floor(hash(li * 7 + i) * CAR_COLORS.length)], hit: 0,
+      };
+      placeCar(car);
+      cars.push(car);
+    }
+  });
+  dust = [];
+  ball.active = false;
+  toppled = 0;
+  updateScore();
+  fitView();
+}
 
-  const tint = hit ? 0.5 : 0;
-  const tintR = hit ? 80 : 0;
+function placeCar(car: Car) {
+  const lp = loops[car.loop];
+  let i = 0;
+  while (i < lp.pts.length - 1 && lp.cum[i + 1] < car.s) i++;
+  const a = lp.pts[i], b = lp.pts[(i + 1) % lp.pts.length];
+  const seg = lp.cum[i + 1] - lp.cum[i] || 1;
+  const t = (car.s - lp.cum[i]) / seg;
+  car.x = a[0] + (b[0] - a[0]) * t;
+  car.y = a[1] + (b[1] - a[1]) * t;
+  car.yaw = Math.atan2(b[1] - a[1], b[0] - a[0]);
+}
 
-  const top = hit ? '#554444' : palette.top;
-  const left = hit ? '#443333' : palette.left;
-  const right = hit ? '#4a3838' : palette.right;
-  const strokeColor = hit ? 'rgba(255,120,80,0.8)' : 'rgba(255,255,255,0.18)';
+// ── Building frame ────────────────────────────────────────────────────────
+// Body coordinates: al ∈ [-2ha, 0] along the toppling direction (0 = hinge edge),
+// ac ∈ [-hc, hc] across it, z ∈ [0, h]. Tilting by θ maps (al, z) to
+// (al·cosθ + z·sinθ, -al·sinθ + z·cosθ) around the hinge.
+interface Frame { ax: number; ay: number; cx: number; cy: number; ha: number; hc: number; px: number; py: number; cos: number; sin: number }
 
-  const h = b.floors * FLOOR_H;
-  isoBox(b.gx, b.gy, b.w, b.d, h, top, left, right, strokeColor, b.angle, b.tiltAxisAngle);
+function frame(b: Building): Frame {
+  const [ax, ay] = DIRS[b.dir];
+  const ha = ax !== 0 ? b.hx : b.hy, hc = ax !== 0 ? b.hy : b.hx;
+  return { ax, ay, cx: -ay, cy: ax, ha, hc, px: b.cx + ax * ha, py: b.cy + ay * ha, cos: Math.cos(b.theta), sin: Math.sin(b.theta) };
+}
 
-  // Windows (only if alive and upright)
-  if (b.alive && b.angle < 0.15) {
-    const winW = 0.06, winH_ratio = 0.12;
-    const cols = Math.max(1, Math.floor(b.w * 4));
-    const rows = b.floors;
-    ctx.fillStyle = palette.win;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const offX = -b.w + (c + 0.5) * (b.w * 2 / cols);
-        const wz = (r + 0.4) * FLOOR_H;
-        const [sx, sy] = toScreen(b.gx + offX, b.gy + b.d);
-        ctx.fillRect(sx - 3, sy - wz * TH - 4, 4, 5);
+function toBody(f: Frame, x: number, y: number, z: number): V3 {
+  const rx = x - f.px, ry = y - f.py;
+  const al = rx * f.ax + ry * f.ay, ac = rx * f.cx + ry * f.cy;
+  return [al * f.cos - z * f.sin, ac, al * f.sin + z * f.cos];
+}
+
+function toWorld(f: Frame, al: number, ac: number, z: number): V3 {
+  const wal = al * f.cos + z * f.sin, wz = -al * f.sin + z * f.cos;
+  return [f.px + f.ax * wal + f.cx * ac, f.py + f.ay * wal + f.cy * ac, wz];
+}
+
+function inertia(b: Building, ha: number) {
+  const m = 4 * b.hx * b.hy * b.h * DENSITY;
+  return m * (4 * ha * ha + b.h * b.h) / 3;
+}
+
+function insideBuilding(b: Building, x: number, y: number, z: number, pad = 0) {
+  const f = frame(b);
+  const [al, ac, bz] = toBody(f, x, y, z);
+  return al > -2 * f.ha - pad && al < pad && Math.abs(ac) < f.hc + pad && bz > -pad && bz < b.h + pad;
+}
+
+// ── Ball ↔ building ───────────────────────────────────────────────────────
+function collideBallBuilding(b: Building) {
+  // Upright and at rest: pick the toppling direction from where the ball comes from
+  if (!b.fallen && b.theta === 0 && b.omega === 0) {
+    const qx = clamp(ball.x, b.cx - b.hx, b.cx + b.hx), qy = clamp(ball.y, b.cy - b.hy, b.cy + b.hy);
+    const qz = clamp(ball.z, 0, b.h);
+    const d = Math.hypot(ball.x - qx, ball.y - qy, ball.z - qz);
+    if (d >= BALL_R) return;
+    let px = -(ball.x - qx), py = -(ball.y - qy);
+    if (Math.hypot(px, py) < 0.3 * (d || 1)) { px = ball.vx; py = ball.vy; } // landed on the roof
+    b.dir = Math.abs(px) > Math.abs(py) ? (px > 0 ? 0 : 1) : (py > 0 ? 2 : 3);
+  }
+
+  const f = frame(b);
+  const [al, ac, z] = toBody(f, ball.x, ball.y, ball.z);
+  const qa = clamp(al, -2 * f.ha, 0), qc = clamp(ac, -f.hc, f.hc), qz = clamp(z, 0, b.h);
+  let na = al - qa, nc = ac - qc, nz = z - qz;
+  let d = Math.hypot(na, nc, nz);
+  if (d >= BALL_R) return;
+  let pen: number;
+  if (d < 1e-6) {
+    // Centre inside the box: leave through the nearest face
+    const faces: [number, number, number, number][] = [
+      [al + 2 * f.ha, -1, 0, 0], [-al, 1, 0, 0], [ac + f.hc, 0, -1, 0], [f.hc - ac, 0, 1, 0], [b.h - z, 0, 0, 1],
+    ];
+    faces.sort((p, q) => p[0] - q[0]);
+    [, na, nc, nz] = faces[0];
+    pen = faces[0][0] + BALL_R;
+  } else {
+    na /= d; nc /= d; nz /= d;
+    pen = BALL_R - d;
+  }
+  // Normal and contact point back to world (al/z part is rotated by θ)
+  const wna = na * f.cos + nz * f.sin, wnz = -na * f.sin + nz * f.cos;
+  const nx = f.ax * wna + f.cx * nc, ny = f.ay * wna + f.cy * nc;
+  const cal = qa * f.cos + qz * f.sin, cz = -qa * f.sin + qz * f.cos; // contact relative to hinge
+
+  ball.x += nx * pen; ball.y += ny * pen; ball.z += wnz * pen;
+
+  // Surface velocity of the tilting box at the contact point: ω × r in the (al, z) plane
+  const sva = b.omega * cz, svz = -b.omega * cal;
+  const vn = (ball.vx - f.ax * sva) * nx + (ball.vy - f.ay * sva) * ny + (ball.vz - svz) * wnz;
+  if (vn >= 0) return;
+
+  if (b.fallen) {
+    ball.vx -= (1 + E_BUILDING) * vn * nx; ball.vy -= (1 + E_BUILDING) * vn * ny; ball.vz -= (1 + E_BUILDING) * vn * wnz;
+    return;
+  }
+  // Impulse on a hinged body: lever of the normal about the hinge axis
+  const lever = cz * wna - cal * wnz;
+  const invI = 1 / inertia(b, f.ha);
+  const j = -(1 + E_BUILDING) * vn / (1 / ballMass + lever * lever * invI);
+  ball.vx += nx * j / ballMass; ball.vy += ny * j / ballMass; ball.vz += wnz * j / ballMass;
+  b.omega -= j * lever * invI;
+  b.hit = 0.35;
+}
+
+// ── Buildings ─────────────────────────────────────────────────────────────
+// Smallest tilt at which a toppling building touches a neighbour in its path.
+function contactAngle(b: Building, f: Frame): { angle: number; other: Building | null } {
+  let best = Math.PI / 2, other: Building | null = null;
+  for (const o of buildings) {
+    if (o === b || (!o.fallen && o.theta > 0.35)) continue;
+    // Footprint and height of the obstacle (a fallen one lies where its box is now)
+    let x0 = o.cx - o.hx, y0 = o.cy - o.hy, x1 = o.cx + o.hx, y1 = o.cy + o.hy, top = o.h;
+    if (o.fallen) {
+      const box = buildingBox(o);
+      [x0, y0, top] = box.min; [x1, y1, top] = box.max;
+    }
+    let alMin = Infinity, alMax = -Infinity, acMin = Infinity, acMax = -Infinity;
+    for (const [x, y] of [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]) {
+      const rx = x - f.px, ry = y - f.py;
+      const al = rx * f.ax + ry * f.ay, ac = rx * f.cx + ry * f.cy;
+      alMin = Math.min(alMin, al); alMax = Math.max(alMax, al);
+      acMin = Math.min(acMin, ac); acMax = Math.max(acMax, ac);
+    }
+    if (acMax <= -f.hc || acMin >= f.hc || alMin < -0.01 || alMin >= b.h) continue;
+    const dx = Math.max(alMin, 0);
+    const topAtReach = Math.sqrt(b.h * b.h - dx * dx);
+    const angle = topAtReach <= top ? Math.asin(dx / b.h) : Math.atan2(dx, top);
+    if (angle < b.theta - 0.05) continue; // already past it
+    if (angle < best) { best = angle; other = o; }
+  }
+  return { angle: best, other };
+}
+
+function stepBuildings(dt: number) {
+  for (const b of buildings) {
+    b.hit = Math.max(0, b.hit - dt);
+    if (b.fallen || (b.theta === 0 && b.omega === 0)) continue;
+    const f = frame(b);
+    // Gravity torque about the hinge: centre of mass at body (-ha, h/2)
+    const alpha = G * 3 * (-f.ha * f.cos + (b.h / 2) * f.sin) / (4 * f.ha * f.ha + b.h * b.h);
+    b.omega += alpha * dt;
+    b.omega *= 1 - 0.4 * dt;
+    b.theta += b.omega * dt;
+
+    if (b.theta <= 0) {
+      b.theta = 0;
+      b.omega = b.omega < -0.4 ? -b.omega * 0.3 : 0; // rocks back onto its base
+      continue;
+    }
+
+    const { angle, other } = contactAngle(b, f);
+    if (b.theta >= angle) {
+      b.theta = angle;
+      if (other && !other.fallen) {
+        if (other.theta === 0 && other.omega === 0) other.dir = b.dir;
+        if (other.dir === b.dir) {
+          // Domino: hand over momentum on impact, keep leaning on it afterwards
+          if (b.omega > 0) other.omega += b.omega * 0.7 * Math.min(1.5, b.h / Math.max(other.h, 0.6));
+          if (alpha > 0) other.omega += alpha * dt * 0.6 * inertia(b, f.ha) / inertia(other, frame(other).ha);
+          other.hit = Math.max(other.hit, 0.15);
+        }
+      }
+      b.omega = Math.min(b.omega, 0) * 0.3;
+    }
+
+    if (b.theta >= Math.PI / 2 - 1e-3) {
+      b.theta = Math.PI / 2;
+      b.omega = 0;
+      b.fallen = true;
+      toppled++;
+      updateScore();
+      const box = buildingBox(b);
+      for (let i = 0; i < 18; i++) {
+        const a = hash(b.seed + i) * Math.PI * 2;
+        dust.push({
+          x: box.min[0] + hash(b.seed + i * 2.3) * (box.max[0] - box.min[0]),
+          y: box.min[1] + hash(b.seed + i * 3.7) * (box.max[1] - box.min[1]),
+          z: 0.1, vx: Math.cos(a) * 1.2, vy: Math.sin(a) * 1.2, vz: 0.6 + hash(i) * 0.8, life: 1, size: 0.25 + hash(i * 9) * 0.25,
+        });
       }
     }
-    // Right face windows
-    const cols2 = Math.max(1, Math.floor(b.d * 4));
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols2; c++) {
-        const offY = -b.d + (c + 0.5) * (b.d * 2 / cols2);
-        const wz = (r + 0.4) * FLOOR_H;
-        const [sx, sy] = toScreen(b.gx + b.w, b.gy + offY);
-        ctx.fillRect(sx - 3, sy - wz * TH - 4, 4, 5);
+
+    // Anything under a falling building gets crushed
+    if (b.theta > 0.1) {
+      for (const car of cars) {
+        if (car.state !== 'debris' && car.squash === 1 && insideBuilding(b, car.x, car.y, 0.12)) {
+          car.state = 'wreck'; car.squash = 0.35; car.v = 0; car.hit = 0.6;
+        }
       }
     }
   }
 }
 
-// ── Draw car ──────────────────────────────────────────────────────────────
-function drawCar(car: Car) {
-  const carW = 0.22, carD = 0.14, carH = 0.14;
-  // Determine facing direction from velocity
-  const angle = Math.atan2(car.vy, car.vx);
-  const hit = car.hitTimer > 0;
-
-  const strokeColor = hit ? 'rgba(255,100,50,0.9)' : 'rgba(255,255,255,0.4)';
-  const top = hit ? '#886644' : car.color + '88';
-  const left = hit ? '#664422' : car.color + '55';
-  const right = hit ? '#775533' : car.color + '44';
-
-  isoBox(car.wx, car.wy, carW, carD, carH, top, left, right, strokeColor);
+// ── Cars ──────────────────────────────────────────────────────────────────
+function blockedAhead(car: Car) {
+  const hx = Math.cos(car.yaw), hy = Math.sin(car.yaw);
+  const px = car.x + hx * 0.5, py = car.y + hy * 0.5;
+  for (const b of buildings) {
+    if ((b.fallen || b.theta > 0.05) && insideBuilding(b, px, py, 0.12, 0.15)) return true;
+  }
+  for (const o of cars) {
+    if (o === car) continue;
+    const dx = o.x - car.x, dy = o.y - car.y;
+    const ahead = dx * hx + dy * hy, side = Math.abs(dx * hy - dy * hx);
+    if (ahead <= 0 || ahead > 0.75 || side > 0.28) continue;
+    // Queue behind cars going our way and behind wrecks; ignore crossing traffic
+    if (o.state !== 'drive' || Math.cos(o.yaw - car.yaw) > 0.5) return true;
+  }
+  return false;
 }
 
-// ── Draw ball ─────────────────────────────────────────────────────────────
+function stepCars(dt: number) {
+  for (const car of cars) {
+    car.hit = Math.max(0, car.hit - dt);
+    if (car.state === 'drive') {
+      const target = blockedAhead(car) ? 0 : car.vmax;
+      car.v += clamp(target - car.v, -8 * dt, 2 * dt);
+      const lp = loops[car.loop];
+      car.s = (car.s + car.v * dt) % lp.total;
+      placeCar(car);
+    } else if (car.state === 'debris') {
+      car.vz -= G * dt;
+      car.x += car.vx * dt; car.y += car.vy * dt; car.z += car.vz * dt;
+      car.yaw += car.spin * dt; car.roll += car.rollV * dt;
+      for (const b of buildings) {
+        if (insideBuilding(b, car.x, car.y, car.z + 0.08, 0.1)) {
+          car.x -= car.vx * dt; car.y -= car.vy * dt;
+          car.vx *= -0.4; car.vy *= -0.4;
+        }
+      }
+      if (car.z <= 0) {
+        car.z = 0;
+        if (car.vz < -1) car.vz *= -0.3;
+        else car.vz = 0;
+        const fr = Math.pow(0.15, dt);
+        car.vx *= fr; car.vy *= fr; car.spin *= fr; car.rollV *= fr;
+        const rest = Math.round(car.roll / Math.PI) * Math.PI; // settle on wheels or roof
+        car.roll += (rest - car.roll) * (1 - fr);
+        if (Math.hypot(car.vx, car.vy) < 0.1 && car.vz === 0) car.state = 'wreck';
+      }
+    }
+  }
+}
+
+// ── Ball ──────────────────────────────────────────────────────────────────
+function stepBall(dt: number) {
+  if (!ball.active) return;
+  ball.vz -= G * dt;
+  ball.x += ball.vx * dt; ball.y += ball.vy * dt; ball.z += ball.vz * dt;
+  if (ball.z < BALL_R) {
+    ball.z = BALL_R;
+    ball.vz = ball.vz < -1 ? -ball.vz * 0.35 : 0;
+    const roll = Math.exp(-0.45 * dt);
+    ball.vx *= roll; ball.vy *= roll;
+  }
+  for (const b of buildings) collideBallBuilding(b);
+
+  for (const car of cars) {
+    if (car.state === 'debris') continue;
+    const dx = ball.x - car.x, dy = ball.y - car.y;
+    if (Math.hypot(dx, dy) > BALL_R + 0.24 || ball.z > BALL_R + 0.25) continue;
+    const speed = Math.hypot(ball.vx, ball.vy);
+    if (speed < 0.5) continue;
+    // Kick scales with the ball's mass but is capped, so cars tumble rather than fly off
+    const k = Math.min(0.8, 0.35 * ballMass) * Math.min(1, 9 / speed);
+    car.state = 'debris'; car.hit = 0.6;
+    car.vx = ball.vx * k - dx * 2; car.vy = ball.vy * k - dy * 2;
+    car.vz = 2 + Math.min(speed, 12) * 0.15;
+    car.spin = (hash(car.s) - 0.5) * 14; car.rollV = (hash(car.s * 3) - 0.5) * 12;
+    ball.vx *= 0.85; ball.vy *= 0.85;
+  }
+
+  const speed = Math.hypot(ball.vx, ball.vy, ball.vz);
+  ball.still = speed < 0.15 ? ball.still + dt : 0;
+  const [x0, y0, x1, y1] = city.bounds;
+  const out = ball.x < x0 - 4 || ball.y < y0 - 4 || ball.x > x1 + 4 || ball.y > y1 + 4;
+  if (ball.still > 1.2 || out) ball.alpha -= dt * 2;
+  if (ball.alpha <= 0) ball.active = false;
+}
+
+function stepDust(dt: number) {
+  for (const p of dust) {
+    p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+    p.vx *= 1 - 1.5 * dt; p.vy *= 1 - 1.5 * dt; p.vz *= 1 - 1.5 * dt;
+    p.size += dt * 0.5;
+    p.life -= dt * 0.8;
+  }
+  dust = dust.filter((p) => p.life > 0);
+}
+
+// ── Throwing ──────────────────────────────────────────────────────────────
+// Find the surface under the pointer: walk the view ray (x+t, y+t, t) and keep
+// the nearest hit among the ground and every building's roof and front faces.
+function pick(sx: number, sy: number): { p: V3; n: V3 } {
+  const [gx, gy] = unproj(sx, sy, 0);
+  let best = 0, n: V3 = [0, 0, 1];
+  for (const b of buildings) {
+    const box = buildingBox(b);
+    const [x0, y0, z0] = box.min, [x1, y1, z1] = box.max;
+    const inXY = (t: number) => gx + t >= x0 && gx + t <= x1 && gy + t >= y0 && gy + t <= y1;
+    if (z1 > best && inXY(z1)) { best = z1; n = [0, 0, 1]; }
+    let t = x1 - gx;
+    if (t > best && t >= z0 && t <= z1 && gy + t >= y0 && gy + t <= y1) { best = t; n = [1, 0, 0]; }
+    t = y1 - gy;
+    if (t > best && t >= z0 && t <= z1 && gx + t >= x0 && gx + t <= x1) { best = t; n = [0, 1, 0]; }
+  }
+  return { p: [gx + best + n[0] * BALL_R, gy + best + n[1] * BALL_R, best + n[2] * BALL_R], n };
+}
+
+let aim: { sx: number; sy: number; p: V3 } | null = null;
+let aimCur: V2 = [0, 0];
+
+function launchVelocity(): V3 | null {
+  if (!aim) return null;
+  const z = aim.p[2] - BALL_R;
+  const [x0, y0] = unproj(aim.sx, aim.sy, z);
+  const [x1, y1] = unproj(aimCur[0], aimCur[1], z);
+  let vx = (x0 - x1) * 4 * speedMult, vy = (y0 - y1) * 4 * speedMult;
+  const s = Math.hypot(vx, vy);
+  if (s < 0.4) return null;
+  const max = 26 * speedMult;
+  if (s > max) { vx *= max / s; vy *= max / s; }
+  return [vx, vy, 1 + Math.min(s, max) * 0.08];
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  if (!e.isPrimary) return;
+  canvas.setPointerCapture(e.pointerId);
+  aim = { sx: e.clientX, sy: e.clientY, p: pick(e.clientX, e.clientY).p };
+  aimCur = [e.clientX, e.clientY];
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (aim && e.isPrimary) aimCur = [e.clientX, e.clientY];
+});
+canvas.addEventListener('pointerup', (e) => {
+  if (!aim || !e.isPrimary) return;
+  aimCur = [e.clientX, e.clientY];
+  const v = launchVelocity();
+  if (v) {
+    ball = { x: aim.p[0], y: aim.p[1], z: aim.p[2], vx: v[0], vy: v[1], vz: v[2], active: true, still: 0, alpha: 1 };
+  }
+  aim = null;
+});
+canvas.addEventListener('pointercancel', () => { aim = null; });
+
+// ── Geometry for drawing and sorting ──────────────────────────────────────
+// Corner index bits: 1 → max along first axis, 2 → max along second, 4 → top.
+const FACES = [[0, 2, 6, 4], [1, 3, 7, 5], [0, 1, 5, 4], [2, 3, 7, 6], [0, 1, 3, 2], [4, 5, 7, 6]];
+const LIGHT: V3 = (() => { const l = Math.hypot(0.35, -0.15, 1); return [0.35 / l, -0.15 / l, 1 / l]; })();
+
+function buildingCorners(b: Building): V3[] {
+  const f = frame(b);
+  const out: V3[] = [];
+  for (let i = 0; i < 8; i++) {
+    out.push(toWorld(f, i & 1 ? 0 : -2 * f.ha, i & 2 ? f.hc : -f.hc, i & 4 ? b.h : 0));
+  }
+  return out;
+}
+
+function carCorners(car: Car): V3[] {
+  const hl = 0.2, hw = 0.12, h = 0.17 * car.squash;
+  const cy = Math.cos(car.yaw), sy = Math.sin(car.yaw), cr = Math.cos(car.roll), sr = Math.sin(car.roll);
+  const out: V3[] = [];
+  for (let i = 0; i < 8; i++) {
+    const lx = i & 1 ? hl : -hl, ly0 = i & 2 ? hw : -hw, lz0 = (i & 4 ? h : 0) - h / 2;
+    const ly = ly0 * cr - lz0 * sr, lz = ly0 * sr + lz0 * cr + h / 2; // roll about the car's long axis
+    out.push([car.x + lx * cy - ly * sy, car.y + lx * sy + ly * cy, car.z + lz]);
+  }
+  return out;
+}
+
+function bounds(pts: V3[]) {
+  const min: V3 = [Infinity, Infinity, Infinity], max: V3 = [-Infinity, -Infinity, -Infinity];
+  for (const p of pts) for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], p[k]); max[k] = Math.max(max[k], p[k]); }
+  return { min, max };
+}
+
+function buildingBox(b: Building) { return bounds(buildingCorners(b)); }
+
+function rgb(c: number[], k: number, flash = 0) {
+  const f = (i: number, hot: number) => Math.round(clamp(c[i] * k + (hot - c[i] * k) * flash, 0, 255));
+  return `rgb(${f(0, 255)},${f(1, 140)},${f(2, 90)})`;
+}
+
+// Draws the visible faces of a convex box; calls onFace for extra detail per face.
+function drawBox(corners: V3[], color: number[], flash: number, stroke: string,
+  onFace?: (face: number, s: V2[]) => void) {
+  const s = corners.map((p) => proj(p[0], p[1], p[2]));
+  let mx = 0, my = 0, mz = 0;
+  for (const p of corners) { mx += p[0] / 8; my += p[1] / 8; mz += p[2] / 8; }
+  ctx.lineWidth = 0.8;
+  ctx.strokeStyle = stroke;
+  FACES.forEach((face, fi) => {
+    let nx = -mx, ny = -my, nz = -mz;
+    for (const i of face) { nx += corners[i][0] / 4; ny += corners[i][1] / 4; nz += corners[i][2] / 4; }
+    if (nx + ny + nz <= 1e-4) return; // faces away from the camera
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    const light = 0.5 + 0.55 * Math.max(0, (nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2]) / nl);
+    ctx.beginPath();
+    face.forEach((i, k) => (k ? ctx.lineTo(s[i][0], s[i][1]) : ctx.moveTo(s[i][0], s[i][1])));
+    ctx.closePath();
+    ctx.fillStyle = rgb(color, light, flash);
+    ctx.fill();
+    ctx.stroke();
+    if (onFace) onFace(fi, face.map((i) => s[i]));
+  });
+}
+
+function drawBuilding(b: Building) {
+  const pal = PALETTES[b.pal];
+  const f = frame(b);
+  drawBox(buildingCorners(b), pal.base, b.hit / 0.35 * 0.6, b.hit > 0 ? 'rgba(255,140,90,0.8)' : 'rgba(255,255,255,0.14)', (fi, s) => {
+    if (fi > 3) return; // roof / floor
+    // Side faces are parallelograms on screen: s0 + u·(s1 - s0) + v·(s3 - s0)
+    const width = fi < 2 ? 2 * f.hc : 2 * f.ha;
+    const cols = Math.max(1, Math.round(width / 0.3));
+    const P = (u: number, v: number): V2 => [
+      s[0][0] + u * (s[1][0] - s[0][0]) + v * (s[3][0] - s[0][0]),
+      s[0][1] + u * (s[1][1] - s[0][1]) + v * (s[3][1] - s[0][1]),
+    ];
+    for (let r = 0; r < b.floors; r++) for (let c = 0; c < cols; c++) {
+      const lit = hash(b.seed + fi * 13 + r * 7 + c * 3) < 0.6;
+      ctx.fillStyle = lit ? pal.win : 'rgba(0,0,0,0.3)';
+      const u0 = (c + 0.3) / cols, u1 = (c + 0.7) / cols, v0 = (r + 0.3) / b.floors, v1 = (r + 0.7) / b.floors;
+      const a = P(u0, v0), bb = P(u1, v0), cc = P(u1, v1), d = P(u0, v1);
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]); ctx.lineTo(bb[0], bb[1]); ctx.lineTo(cc[0], cc[1]); ctx.lineTo(d[0], d[1]);
+      ctx.closePath();
+      ctx.fill();
+    }
+  });
+}
+
+function drawCar(car: Car) {
+  const dark = car.state === 'wreck' ? 0.45 : 1;
+  const c = car.color.map((v) => v * dark);
+  drawBox(carCorners(car), c, car.hit, car.state === 'drive' ? 'rgba(255,255,255,0.35)' : 'rgba(255,120,60,0.6)');
+}
+
 function drawBall() {
-  if (!ball.active && !dragStart) return;
-
-  const r = ball.r;
-  const [sx, sy] = toScreen(ball.wx, ball.wy);
-  const screenY = sy - ball.z * TH;
-
-  // Shadow
-  const shadowAlpha = Math.max(0, 0.4 - ball.z * 0.08);
+  const [sx, sy] = proj(ball.x, ball.y, ball.z);
+  const r = BALL_R * K * 1.05;
+  ctx.globalAlpha = ball.alpha;
+  const grad = ctx.createRadialGradient(sx - r * 0.35, sy - r * 0.35, 1, sx, sy, r);
+  grad.addColorStop(0, 'rgba(255,255,220,1)');
+  grad.addColorStop(0.5, 'rgba(210,185,100,1)');
+  grad.addColorStop(1, 'rgba(90,65,25,1)');
   ctx.beginPath();
-  ctx.ellipse(sx, sy, r * TW * 0.5, r * TH * 0.35, 0, 0, Math.PI * 2);
-  ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
-  ctx.fill();
-
-  // Ball
-  const grad = ctx.createRadialGradient(sx - 4, screenY - 4, 1, sx, screenY, r * TW * 0.5);
-  grad.addColorStop(0, 'rgba(255,255,220,0.95)');
-  grad.addColorStop(0.5, 'rgba(200,180,100,0.9)');
-  grad.addColorStop(1, 'rgba(80,60,20,0.85)');
-  ctx.beginPath();
-  ctx.arc(sx, screenY, r * TW * 0.5, 0, Math.PI * 2);
+  ctx.arc(sx, sy, r, 0, Math.PI * 2);
   ctx.fillStyle = grad;
   ctx.fill();
   ctx.strokeStyle = 'rgba(255,255,200,0.6)';
   ctx.lineWidth = 1;
   ctx.stroke();
+  ctx.globalAlpha = 1;
 }
 
-// ── Draw drag indicator ───────────────────────────────────────────────────
-function drawDragIndicator() {
-  if (!dragStart || !dragCurrent) return;
-  const ox = dragStart.sx, oy = dragStart.sy;
-  const cx = dragCurrent.sx, cy = dragCurrent.sy;
+// ── Depth ordering ────────────────────────────────────────────────────────
+// Topological painter's sort over screen-overlapping pairs: A is behind B when
+// their 3D bounds are separated with A on the far side along x, y or z.
+interface Drawable {
+  min: V3; max: V3; sx0: number; sx1: number; sy0: number; sy1: number;
+  key: number; draw: () => void; behind: Drawable[]; mark: number;
+}
 
-  // Dashed line from drag start to current
-  ctx.save();
-  ctx.setLineDash([4, 4]);
-  ctx.strokeStyle = 'rgba(255,220,100,0.6)';
-  ctx.lineWidth = 2;
+function drawable(pts: V3[], draw: () => void): Drawable {
+  const { min, max } = bounds(pts);
+  let sx0 = Infinity, sx1 = -Infinity, sy0 = Infinity, sy1 = -Infinity;
+  for (const p of pts) {
+    const [x, y] = proj(p[0], p[1], p[2]);
+    sx0 = Math.min(sx0, x); sx1 = Math.max(sx1, x); sy0 = Math.min(sy0, y); sy1 = Math.max(sy1, y);
+  }
+  return { min, max, sx0, sx1, sy0, sy1, key: (min[0] + max[0] + min[1] + max[1] + min[2] + max[2]) / 2, draw, behind: [], mark: 0 };
+}
+
+function drawSorted(items: Drawable[]) {
+  const EPS = 1e-3;
+  const farther = (a: Drawable, b: Drawable) =>
+    a.max[0] <= b.min[0] + EPS || a.max[1] <= b.min[1] + EPS || a.max[2] <= b.min[2] + EPS;
+  for (let i = 0; i < items.length; i++) {
+    const a = items[i];
+    for (let j = i + 1; j < items.length; j++) {
+      const b = items[j];
+      if (a.sx1 < b.sx0 || b.sx1 < a.sx0 || a.sy1 < b.sy0 || b.sy1 < a.sy0) continue;
+      const ab = farther(a, b), ba = farther(b, a);
+      if (ab && !ba) b.behind.push(a);
+      else if (ba && !ab) a.behind.push(b);
+      else if (a.key < b.key) b.behind.push(a);
+      else a.behind.push(b);
+    }
+  }
+  const visit = (n: Drawable) => {
+    if (n.mark) return;
+    n.mark = 1; // marked before recursing, so a cycle can't loop forever
+    for (const m of n.behind) visit(m);
+    n.draw();
+  };
+  items.sort((a, b) => a.key - b.key).forEach(visit);
+}
+
+// ── Ground ────────────────────────────────────────────────────────────────
+function quad(pts: V2[], fill: string) {
   ctx.beginPath();
-  ctx.moveTo(ox, oy);
-  ctx.lineTo(cx, cy);
-  ctx.stroke();
-  ctx.setLineDash([]);
+  pts.forEach(([x, y], i) => {
+    const [sx, sy] = proj(x, y, 0);
+    if (i) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy);
+  });
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+}
 
-  // Arrow tip at drag start (direction of throw)
-  const dx = ox - cx, dy = oy - cy;
-  const len = Math.sqrt(dx * dx + dy * dy);
-  if (len > 5) {
-    const nx = dx / len, ny = dy / len;
-    ctx.strokeStyle = 'rgba(255,220,100,0.9)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(ox, oy);
-    ctx.lineTo(ox + nx * 30, oy + ny * 30);
-    ctx.stroke();
-
-    // Arrowhead
-    const angle = Math.atan2(ny, nx);
-    ctx.beginPath();
-    ctx.moveTo(ox + nx * 30, oy + ny * 30);
-    ctx.lineTo(ox + nx * 30 - Math.cos(angle - 0.5) * 10, oy + ny * 30 - Math.sin(angle - 0.5) * 10);
-    ctx.lineTo(ox + nx * 30 - Math.cos(angle + 0.5) * 10, oy + ny * 30 - Math.sin(angle + 0.5) * 10);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(255,220,100,0.9)';
-    ctx.fill();
+function drawGround() {
+  const [x0, y0, x1, y1] = city.bounds;
+  quad([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], '#13131c');
+  for (const [a, b, c, d] of city.lots) quad([[a + 0.05, b + 0.05], [c - 0.05, b + 0.05], [c - 0.05, d - 0.05], [a + 0.05, d - 0.05]], '#181822');
+  for (const r of city.roads) {
+    const dx = r.b[0] - r.a[0], dy = r.b[1] - r.a[1], l = Math.hypot(dx, dy) || 1;
+    const ux = dx / l, uy = dy / l, nx = -uy * r.w / 2, ny = ux * r.w / 2, ex = ux * r.w / 2, ey = uy * r.w / 2;
+    quad([
+      [r.a[0] - ex + nx, r.a[1] - ey + ny], [r.b[0] + ex + nx, r.b[1] + ey + ny],
+      [r.b[0] + ex - nx, r.b[1] + ey - ny], [r.a[0] - ex - nx, r.a[1] - ey - ny],
+    ], '#0b0b11');
+  }
+  ctx.save();
+  ctx.setLineDash([K * 0.25, K * 0.35]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.lineWidth = 1;
+  for (const r of city.roads) {
+    const [ax, ay] = proj(r.a[0], r.a[1], 0), [bx, by] = proj(r.b[0], r.b[1], 0);
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
   }
   ctx.restore();
+}
 
-  // Show ball preview at drag start (where the ball will actually launch from)
+function shadow(x: number, y: number, z: number, rad: number) {
+  const [sx, sy] = proj(x, y, 0);
   ctx.beginPath();
-  ctx.arc(ox, oy, ball.r * TW * 0.5, 0, Math.PI * 2);
+  ctx.ellipse(sx, sy, rad * K, rad * K * 0.5, 0, 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(0,0,0,${clamp(0.45 - z * 0.06, 0.08, 0.45)})`;
+  ctx.fill();
+}
+
+// ── Aim preview ───────────────────────────────────────────────────────────
+function drawAim() {
+  if (!aim) return;
+  const [bx, by] = proj(aim.p[0], aim.p[1], aim.p[2]);
+  ctx.save();
+  ctx.setLineDash([4, 4]);
   ctx.strokeStyle = 'rgba(255,220,100,0.5)';
   ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(aim.sx, aim.sy); ctx.lineTo(aimCur[0], aimCur[1]); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.arc(bx, by, BALL_R * K, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255,220,100,0.8)';
   ctx.stroke();
+  // Predicted path (ignores collisions)
+  const v = launchVelocity();
+  if (v) {
+    let [x, y, z] = aim.p, [vx, vy, vz] = v;
+    const dt = 1 / 30;
+    for (let i = 1; i <= 45; i++) {
+      vz -= G * dt; x += vx * dt; y += vy * dt; z += vz * dt;
+      if (z < BALL_R) { z = BALL_R; vz = vz < -1 ? -vz * 0.35 : 0; }
+      if (i % 2) continue;
+      const [sx, sy] = proj(x, y, z);
+      ctx.beginPath();
+      ctx.arc(sx, sy, 2, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255,220,100,${0.9 - i / 55})`;
+      ctx.fill();
+    }
+  }
+  ctx.restore();
 }
 
-// ── Painter's sort ────────────────────────────────────────────────────────
-// In isometric, draw order = ascending (wx + wy) — farther first
-function sortDepth(wx: number, wy: number) { return wx + wy; }
+// ── Frame ─────────────────────────────────────────────────────────────────
+function render() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#0a0a0f';
+  ctx.fillRect(0, 0, W, H);
+  drawGround();
 
-// ── Main render ───────────────────────────────────────────────────────────
-let last = 0;
-
-function draw(ts: number) {
-  const dt = Math.min((ts - last) / 1000, 0.05);
-  last = ts;
-
-  OX = W / 2;
-  OY = H * 0.28;
-
-  updateBall(dt);
-  updateBuildings(dt);
-  updateCars(dt);
-
-  drawGround(currentCity);
-
-  // Collect and sort renderable objects by painter's depth (wx + wy).
-  // Ball gets a z bonus so it sorts in front when airborne, but behind
-  // buildings it's passing under when rolling at ground level.
-  type RenderItem =
-    | { kind: 'building'; obj: Building; depth: number }
-    | { kind: 'car'; obj: Car; depth: number }
-    | { kind: 'ball'; depth: number };
-
-  const items: RenderItem[] = [
-    ...buildings.map(b => ({ kind: 'building' as const, obj: b, depth: sortDepth(b.gx, b.gy) })),
-    ...cars.map(c => ({ kind: 'car' as const, obj: c, depth: sortDepth(c.wx, c.wy) })),
-  ];
+  // Shadows go under everything, so buildings in front cover them
+  for (const car of cars) if (car.state === 'debris') shadow(car.x, car.y, car.z, 0.22);
   if (ball.active) {
-    items.push({ kind: 'ball', depth: sortDepth(ball.wx, ball.wy) + ball.z * 0.5 });
-  }
-  items.sort((a, b) => a.depth - b.depth);
-
-  for (const item of items) {
-    if (item.kind === 'building') drawBuilding(item.obj);
-    else if (item.kind === 'car') drawCar(item.obj);
-    else drawBall();
+    ctx.globalAlpha = ball.alpha;
+    shadow(ball.x, ball.y, ball.z - BALL_R, BALL_R * 0.9);
+    ctx.globalAlpha = 1;
   }
 
-  drawDragIndicator();
+  const items: Drawable[] = [];
+  for (const b of buildings) items.push(drawable(buildingCorners(b), () => drawBuilding(b)));
+  for (const car of cars) items.push(drawable(carCorners(car), () => drawCar(car)));
+  if (ball.active) {
+    const r = BALL_R;
+    items.push(drawable([[ball.x - r, ball.y - r, ball.z - r], [ball.x + r, ball.y + r, ball.z + r]], drawBall));
+  }
+  drawSorted(items);
 
-  requestAnimationFrame(draw);
+  for (const p of dust) {
+    const [sx, sy] = proj(p.x, p.y, p.z);
+    ctx.beginPath();
+    ctx.arc(sx, sy, p.size * K, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(150,140,130,${p.life * 0.25})`;
+    ctx.fill();
+  }
+  drawAim();
 }
+
+let last = 0, acc = 0;
+function frameLoop(ts: number) {
+  const dt = last ? Math.min((ts - last) / 1000, 0.05) : 0;
+  last = ts;
+  acc += dt;
+  while (acc >= STEP) {
+    stepBall(STEP);
+    stepBuildings(STEP);
+    stepCars(STEP);
+    stepDust(STEP);
+    acc -= STEP;
+  }
+  render();
+  requestAnimationFrame(frameLoop);
+}
+
+// ── View ──────────────────────────────────────────────────────────────────
+// Scale and centre the city diamond inside the area not covered by UI.
+function fitView() {
+  if (!city) return;
+  const [x0, y0, x1, y1] = city.bounds;
+  const maxH = Math.max(...buildings.map((b) => b.h), 1);
+  const wide = W > 800;
+  const left = 24, right = W - (wide ? 250 : 24), top = wide ? 56 : 210, bottom = H - 70;
+  const spanX = (x1 - y0) - (x0 - y1);
+  const spanY = ((x1 + y1) - (x0 + y0)) / 2 + maxH;
+  K = clamp(Math.min((right - left) / spanX, (bottom - top) / spanY), 12, 70);
+  OX = (left + right) / 2 - ((x1 - y0) + (x0 - y1)) / 2 * K;
+  const syTop = (x0 + y0) / 2 * K - maxH * K, syBot = (x1 + y1) / 2 * K;
+  OY = (top + bottom) / 2 - (syTop + syBot) / 2;
+}
+
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  fitView();
+}
+window.addEventListener('resize', resize);
 
 // ── Controls ──────────────────────────────────────────────────────────────
 const citySelect = document.getElementById('city-select') as HTMLSelectElement;
-const resetBtn = document.getElementById('reset-btn') as HTMLButtonElement;
 const speedRange = document.getElementById('speed-range') as HTMLInputElement;
 const speedLabel = document.getElementById('speed-label') as HTMLElement;
+const massRange = document.getElementById('mass-range') as HTMLInputElement;
+const massLabel = document.getElementById('mass-label') as HTMLElement;
+const scoreLabel = document.getElementById('score-label') as HTMLElement;
+
+function updateScore() {
+  scoreLabel.textContent = `toppled: ${toppled} / ${buildings.length}`;
+}
 
 citySelect.addEventListener('change', () => {
   currentCity = citySelect.value;
   buildCity(currentCity);
 });
-
-resetBtn.addEventListener('click', () => buildCity(currentCity));
-
+document.getElementById('reset-btn')!.addEventListener('click', () => buildCity(currentCity));
 speedRange.addEventListener('input', () => {
   speedMult = parseFloat(speedRange.value);
   speedLabel.textContent = `ball speed: ${speedMult.toFixed(1)}×`;
 });
-
+massRange.addEventListener('input', () => {
+  ballMass = parseFloat(massRange.value);
+  massLabel.textContent = `ball mass: ${ballMass.toFixed(1)}`;
+});
 window.addEventListener('keydown', (e) => {
+  const t = e.target as HTMLElement;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
   if (e.key === 'r' || e.key === 'R') buildCity(currentCity);
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────
+resize();
 buildCity('grid');
-requestAnimationFrame(draw);
+requestAnimationFrame(frameLoop);
 </script>
