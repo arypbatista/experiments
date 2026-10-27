@@ -1,0 +1,392 @@
+---
+---
+
+<canvas id="c" style="position:fixed;inset:0;display:block;background:#ecebe6;cursor:none;touch-action:none;"></canvas>
+
+<script>
+  import { loadInk, fullCanvas, fitRect, rng, PAPER, PAPER_RGB, INK_RGB } from '../../lib/ink';
+  import { drawEye, type EyeState, type PupilKind } from './eyes';
+
+  // Eye pairs in drawing pixel coords (569×1000), read off zoomed crops of
+  // public/ink-figure/ink.png. Press D for the debug view (all faces awake,
+  // fog off, eye sites circled) and click to log drawing coords.
+  // Each eye of a face is its own creature: size, height, how wide it opens
+  // (open > 1 is unnaturally wide, 0 = stays shut), pupil kind, and a lag
+  // before it opens. Single-eye "faces" are cracks in the heavy ink masses.
+  type Eye = { p: [number, number]; r: number; pupil: PupilKind; open: number; lag?: number; socket?: number };
+  type Face = { eyes: Eye[]; tilt?: number; crack?: boolean };
+  const FACES: Face[] = [
+    { tilt: -0.05, eyes: [ // central face, above the blob nose
+      { p: [338, 660], r: 16, pupil: 'dilated', open: 1.2 },
+      { p: [402, 650], r: 12, pupil: 'pin', open: 0.45, lag: 0.8 },
+    ] },
+    { eyes: [ // peaked head, top right: one void, one shut
+      { p: [384, 152], r: 11, pupil: 'void', open: 0.95 },
+      { p: [429, 147], r: 9, pupil: 'pin', open: 0 },
+    ] },
+    { tilt: -0.04, eyes: [ // pale left head: staring pinpricks, wide open
+      { p: [94, 278], r: 13, pupil: 'pin', open: 1.3 },
+      { p: [140, 272], r: 10, pupil: 'pin', open: 1.15, lag: 1.4 },
+    ] },
+    { eyes: [ // chin, bottom: slits
+      { p: [212, 850], r: 14, pupil: 'slit', open: 0.85 },
+      { p: [270, 845], r: 11, pupil: 'slit', open: 0.3, lag: 0.5 },
+    ] },
+    { tilt: -0.06, eyes: [ // right profile
+      { p: [452, 578], r: 12, pupil: 'void', open: 1.0 },
+      { p: [498, 570], r: 9, pupil: 'dilated', open: 0.4, lag: 1.0 },
+    ] },
+    { tilt: 0.05, eyes: [ // lower left, either side of the wedge nose
+      { p: [130, 610], r: 11, pupil: 'pin', open: 1.25 },
+      { p: [191, 619], r: 8, pupil: 'void', open: 0.25, lag: 0.3 },
+    ] },
+    // cracks in the ink masses that look back
+    { crack: true, tilt: -0.5, eyes: [{ p: [236, 425], r: 8, pupil: 'pin', open: 0.5, socket: 0 }] },
+    { crack: true, tilt: 0.3, eyes: [{ p: [236, 212], r: 6, pupil: 'void', open: 0.5, socket: 0 }] },
+    { crack: true, tilt: 1.2, eyes: [{ p: [322, 330], r: 6, pupil: 'pin', open: 0.35, socket: 0 }] },
+  ];
+
+  const LIGHT_FRACTION = 0.2;  // clearing radius as a fraction of min(W, H)
+  const FOG_MAX = 0.95;        // how much paper hides the drawing when unlit (1 = gone)
+  const FOG_REGROW = 0.05;     // fog alpha added per regrow step...
+  const FOG_STEP = 0.09;       // ...every this many seconds
+  const WIPE = 0.28;           // how hard the light wipes the fog per frame
+  const EYE_FPS = 12;          // eyes animate "on twos", like hand-drawn cels
+  const WAKE_HOLD = 2.5;       // seconds a face stays awake after the light leaves
+  const FIXATE_AFTER = 3;      // seconds lit before a face fixates on you...
+  const FIXATED_FADE = 0.045;  // ...and then keeps staring, fading this much per second
+  const BLINK = 1.1;           // slow blinks
+  const BLINK_GAP = [9, 22];   // seconds between blinks (per eye, so out of sync)
+
+  const INK = `rgb(${INK_RGB.join(',')})`;
+
+  // The fog stamp: a paper-clearing blob with a ragged, dry-brush edge.
+  // Several variants alternate so the edge keeps a hand-made tooth.
+  function makeStamp(R: number, seed: number) {
+    const S = Math.ceil(R * 2.4);
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d')!;
+    const img = g.createImageData(S, S);
+    const cx = S / 2;
+    const rnd = rng(seed);
+    const ph = [0, 1, 2, 3, 4].map(() => rnd() * Math.PI * 2);
+    // value-noise lattice for the paper tooth
+    const G = 512, lat = new Float32Array(G * G);
+    for (let i = 0; i < lat.length; i++) lat[i] = rnd();
+    const vn = (x: number, y: number) => {
+      const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi;
+      const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+      const at = (i: number, j: number) => lat[((j & (G - 1)) * G) + (i & (G - 1))];
+      const a = at(xi, yi) + (at(xi + 1, yi) - at(xi, yi)) * ux;
+      const b = at(xi, yi + 1) + (at(xi + 1, yi + 1) - at(xi, yi + 1)) * ux;
+      return a + (b - a) * uy;
+    };
+    const streaks = new Float32Array(180).map(() => rnd());
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const dx = x - cx, dy = y - cx;
+        const d = Math.hypot(dx, dy);
+        const th = Math.atan2(dy, dx);
+        // wobbly, periodic rim
+        const rim = R * (0.84 + 0.06 * Math.sin(3 * th + ph[0]) + 0.04 * Math.sin(5 * th + ph[1])
+          + 0.025 * Math.sin(11 * th + ph[2]) + 0.012 * Math.sin(29 * th + ph[3]));
+        const u = d / rim;
+        const base = u < 0.55 ? 1 : u > 1.1 ? 0 : 1 - (u - 0.55) / 0.55;
+        // dry-brush tooth: coarse paper grain + streaks running along the radius
+        const sIdx = ((th / (Math.PI * 2) + 0.5) * 180) % 180;
+        const si = Math.floor(sIdx), sf = sIdx - si;
+        const streak = streaks[si] * (1 - sf) + streaks[(si + 1) % 180] * sf;
+        const tooth = 0.5 * vn(x / 2.2, y / 2.2) + 0.3 * vn(x / 7, y / 7) + 0.2 * streak;
+        const a = Math.max(0, Math.min(1, (base - (1 - tooth) * 0.75) * 3.5));
+        img.data[(y * S + x) * 4 + 3] = Math.round(a * 255);
+      }
+    }
+    g.putImageData(img, 0, 0);
+    return c;
+  }
+
+  async function main() {
+    const canvas = document.getElementById('c') as HTMLCanvasElement;
+    const { w, h, ink } = await loadInk();
+
+    // drawing tinted ink-on-paper, so its margins are exactly the page colour
+    const art = document.createElement('canvas');
+    art.width = w; art.height = h;
+    {
+      const g = art.getContext('2d')!;
+      const d = g.createImageData(w, h);
+      for (let i = 0; i < w * h; i++) {
+        const k = ink[i];
+        d.data[i * 4] = PAPER_RGB[0] + (INK_RGB[0] - PAPER_RGB[0]) * k;
+        d.data[i * 4 + 1] = PAPER_RGB[1] + (INK_RGB[1] - PAPER_RGB[1]) * k;
+        d.data[i * 4 + 2] = PAPER_RGB[2] + (INK_RGB[2] - PAPER_RGB[2]) * k;
+        d.data[i * 4 + 3] = 255;
+      }
+      g.putImageData(d, 0, 0);
+    }
+
+    // fog layer in CSS pixels (soft enough not to need DPR)
+    const fog = document.createElement('canvas');
+    const fctx = fog.getContext('2d')!;
+    // the mask's colour channels drift with 8-bit premultiplied rounding, so
+    // each frame the mask's alpha is re-filled with exact paper colour here
+    const eyeLayer = document.createElement('canvas'); // device-pixel sized
+    const ectx = eyeLayer.getContext('2d')!;
+    const veil = document.createElement('canvas');
+    const vctx = veil.getContext('2d')!;
+    let stamps: HTMLCanvasElement[] = [];
+    let R = 100;
+    let W0 = 0; // fog initialised?
+
+    let W = 0, H = 0;
+    const ctx = fullCanvas(canvas, (nw, nh) => {
+      W = nw; H = nh;
+      // keep the already-wiped fog across resizes; new area starts fogged
+      const prev = W0 ? fctx.getImageData(0, 0, fog.width, fog.height) : null;
+      fog.width = W; fog.height = H; W0 = W;
+      veil.width = W; veil.height = H;
+      eyeLayer.width = canvas.width; eyeLayer.height = canvas.height;
+      fctx.fillStyle = PAPER;
+      fctx.fillRect(0, 0, W, H);
+      if (prev) {
+        fctx.clearRect(0, 0, prev.width, prev.height);
+        fctx.putImageData(prev, 0, 0);
+      }
+      R = Math.min(W, H) * LIGHT_FRACTION;
+      stamps = [0, 1, 2].map((k) => makeStamp(R, 7 + k * 13));
+    });
+
+    let debug = location.hash.includes('debug');
+    let fit = fitRect(w, h, W, H);
+    const toScreen = (x: number, y: number): [number, number] => [fit.x + x * fit.s, fit.y + y * fit.s];
+
+    // start the light on the central face so there is something on first paint
+    let [mx, my] = toScreen(370, 640);
+    let lx = mx, ly = my;
+
+    const center = (face: Face) => toScreen(
+      face.eyes.reduce((a, e) => a + e.p[0], 0) / face.eyes.length,
+      face.eyes.reduce((a, e) => a + e.p[1], 0) / face.eyes.length,
+    );
+    const state = FACES.map((face, fi) => ({
+      awake: 0,
+      hold: 0,
+      litTime: 0,
+      fixated: false,
+      eyes: face.eyes.map(() => ({
+        nextBlink: BLINK_GAP[0] * 0.5 + Math.random() * BLINK_GAP[1],
+        blink: -1, // time into the current blink, -1 = not blinking
+        look: [0, 0] as [number, number],
+      })),
+      seed: fi + 1,
+    }));
+
+    window.addEventListener('pointermove', (e) => { mx = e.clientX; my = e.clientY; });
+    window.addEventListener('keydown', (e) => {
+      if ((e.target as HTMLElement)?.closest?.('input,select,textarea')) return;
+      if (e.key === 'd' || e.key === 'D') debug = !debug;
+    });
+    canvas.addEventListener('pointerdown', (e) => {
+      mx = e.clientX; my = e.clientY;
+      if (!debug) return;
+      console.log('image coords', Math.round((e.clientX - fit.x) / fit.s), Math.round((e.clientY - fit.y) / fit.s));
+    });
+
+    let last = performance.now();
+    let tickAcc = 0, tick = 0, regrowAcc = 0, stampIdx = 0;
+
+    // advance face logic at EYE_FPS so eyes move in held, drawn-looking steps
+    function stepFaces(dt: number) {
+      FACES.forEach((face, fi) => {
+        const st = state[fi];
+        const [cx, cy] = center(face);
+        const lit = debug || Math.hypot(cx - lx, cy - ly) < R * (face.crack ? 0.5 : 0.75);
+        if (lit) {
+          st.hold = WAKE_HOLD;
+          st.litTime += dt;
+          if (st.litTime > FIXATE_AFTER) st.fixated = true;
+        } else {
+          st.hold -= dt;
+          st.litTime = Math.max(0, st.litTime - dt * 0.5);
+        }
+        const target = st.hold > 0 ? 1 : 0;
+        if (debug) st.awake = 1;
+        // waking is slow; a fixated face lets go only very slowly
+        const rate = target ? 0.32 : st.fixated ? FIXATED_FADE : 0.5;
+        st.awake += Math.sign(target - st.awake) * Math.min(Math.abs(target - st.awake), dt * rate);
+        if (st.awake <= 0) st.fixated = false;
+
+        face.eyes.forEach((eye, k) => {
+          const es = st.eyes[k];
+          // rare, slow, unsynchronised blinks
+          es.nextBlink -= dt;
+          if (es.blink < 0 && es.nextBlink <= 0 && st.awake > 0.95) {
+            es.blink = 0;
+            es.nextBlink = BLINK_GAP[0] + Math.random() * (BLINK_GAP[1] - BLINK_GAP[0]);
+          }
+          if (es.blink >= 0) {
+            es.blink += dt;
+            if (es.blink > BLINK) es.blink = -1;
+          }
+
+          const [px, py] = toScreen(eye.p[0], eye.p[1]);
+          const dx = lx - px, dy = ly - py;
+          const d = Math.hypot(dx, dy) || 1;
+          const m = Math.min(0.5, d / (R * 1.8));
+          const tx = (dx / d) * m, ty = (dy / d) * m * 0.6;
+          if (Math.random() < 0.03) {
+            // occasional snap straight onto you
+            es.look[0] = tx; es.look[1] = ty;
+          } else {
+            // otherwise a sluggish follow with a tremor
+            es.look[0] += (tx - es.look[0]) * 0.1 + (Math.random() - 0.5) * 0.05;
+            es.look[1] += (ty - es.look[1]) * 0.1 + (Math.random() - 0.5) * 0.04;
+          }
+        });
+      });
+    }
+
+    function eyeParams(fi: number, k: number) {
+      const st = state[fi];
+      const eye = FACES[fi].eyes[k];
+      const es = st.eyes[k];
+      const write = Math.min(1, st.awake / 0.3);
+      let o = Math.max(0, Math.min(1, (st.awake - 0.3 - (eye.lag ?? 0) * 0.25) / 0.6));
+      o = o * o * (3 - 2 * o);
+      let open = o * eye.open;
+      if (es.blink >= 0) {
+        // lid sinks slowly, rests shut, drags back up
+        const p = es.blink / BLINK;
+        open *= p < 0.45 ? 1 - p / 0.45 : p < 0.6 ? 0 : (p - 0.6) / 0.4;
+      }
+      return { write, open };
+    }
+
+    // overFog: only faces that have fixated on you, drawn on top of the paper
+    function drawEyes(overFog: boolean) {
+      FACES.forEach((face, fi) => {
+        const st = state[fi];
+        if (overFog && !st.fixated) return;
+        face.eyes.forEach((eye, k) => {
+          const { write, open } = eyeParams(fi, k);
+          if (write <= 0) return;
+          const [px, py] = toScreen(eye.p[0], eye.p[1]);
+          const e: EyeState = {
+            x: px, y: py, r: eye.r * fit.s,
+            tilt: face.tilt ?? 0,
+            flip: face.eyes.length > 1 && k === 0, // heavy end of each lid toward the middle
+            write, open,
+            lookX: st.eyes[k].look[0], lookY: st.eyes[k].look[1],
+            pupil: eye.pupil,
+            socket: eye.socket ?? 1,
+            seed: st.seed * 10 + k,
+            boil: tick % 3,
+          };
+          if (overFog) {
+            // render opaque into a layer, composite faded: avoids alpha-on-alpha greying
+            ectx.setTransform(ctx.getTransform());
+            drawEye(ectx, e, INK, PAPER);
+            ectx.setTransform(1, 0, 0, 1, 0, 0);
+            const a = Math.min(1, st.awake * 1.5) * 0.9;
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.globalAlpha = a;
+            ctx.drawImage(eyeLayer, 0, 0);
+            ctx.restore();
+            ectx.clearRect(0, 0, eyeLayer.width, eyeLayer.height);
+          } else {
+            drawEye(ctx, e, INK, PAPER);
+          }
+        });
+      });
+    }
+
+    function update(dt: number) {
+      lx += (mx - lx) * 0.18;
+      ly += (my - ly) * 0.18;
+      fit = fitRect(w, h, W, H);
+
+      tickAcc += dt;
+      while (tickAcc >= 1 / EYE_FPS) {
+        tickAcc -= 1 / EYE_FPS;
+        tick++;
+        stepFaces(1 / EYE_FPS);
+      }
+
+      // fog: regrow in coarse steps (tiny per-frame alphas stall in 8-bit), wipe at the light
+      regrowAcc += dt;
+      if (regrowAcc >= FOG_STEP) {
+        regrowAcc = 0;
+        fctx.globalCompositeOperation = 'source-over';
+        fctx.globalAlpha = FOG_REGROW;
+        fctx.fillStyle = PAPER;
+        fctx.fillRect(0, 0, W, H);
+      }
+      fctx.globalCompositeOperation = 'destination-out';
+      fctx.globalAlpha = WIPE;
+      const st = stamps[stampIdx++ % stamps.length];
+      fctx.drawImage(st, lx - st.width / 2, ly - st.height / 2);
+      fctx.globalCompositeOperation = 'source-over';
+      fctx.globalAlpha = 1;
+    }
+
+    function render() {
+      ctx.fillStyle = PAPER;
+      ctx.fillRect(0, 0, W, H);
+      ctx.drawImage(art, fit.x, fit.y, fit.w, fit.h);
+      drawEyes(false);
+      if (!debug) {
+        vctx.globalCompositeOperation = 'copy';
+        vctx.drawImage(fog, 0, 0);
+        vctx.globalCompositeOperation = 'source-in';
+        vctx.fillStyle = PAPER;
+        vctx.fillRect(0, 0, W, H);
+        ctx.globalAlpha = FOG_MAX;
+        ctx.drawImage(veil, 0, 0, W, H);
+        ctx.globalAlpha = 1;
+        // faces that fixated on you keep staring up through the paper
+        drawEyes(true);
+      }
+
+      if (debug) {
+        ctx.strokeStyle = 'rgba(220,40,40,0.9)';
+        ctx.fillStyle = 'rgba(220,40,40,0.9)';
+        ctx.font = '11px monospace';
+        FACES.forEach((face, fi) => {
+          for (const eye of face.eyes) {
+            const [px, py] = toScreen(eye.p[0], eye.p[1]);
+            ctx.beginPath();
+            ctx.arc(px, py, eye.r * fit.s * 1.6, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+          const e0 = face.eyes[0];
+          const [px, py] = toScreen(e0.p[0], e0.p[1]);
+          ctx.fillText(String(fi), px - e0.r * fit.s * 3, py);
+        });
+      }
+
+    }
+
+    function frame(now: number) {
+      update(Math.min(0.05, (now - last) / 1000));
+      last = now;
+      render();
+      requestAnimationFrame(frame);
+    }
+
+    // screenshot helper: #warm=x,y[;x,y...] (drawing px) pre-simulates the light
+    // dwelling at each point, since headless browsers barely tick rAF
+    const warm = location.hash.match(/warm=([\d.,;]+)/);
+    if (warm) {
+      for (const pair of warm[1].split(';')) {
+        const [x, y] = pair.split(',').map(Number);
+        [mx, my] = toScreen(x, y);
+        for (let i = 0; i < 360; i++) update(1 / 60);
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  main();
+</script>
