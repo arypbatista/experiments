@@ -5,7 +5,7 @@ const { src: imageSrc, width: imageW, height: imageH } = src;
 
 <canvas
   id="canvas"
-  style="display:block;width:100vw;height:100vh;"
+  style="display:block;width:100vw;height:100vh;touch-action:none;"
   data-src={imageSrc}
   data-w={imageW}
   data-h={imageH}
@@ -36,18 +36,18 @@ const { src: imageSrc, width: imageW, height: imageH } = src;
     window.addEventListener('mousemove', (e) => setTarget(e.clientX, e.clientY));
     window.addEventListener('mouseleave', clearTarget);
 
-    // Touch
-    window.addEventListener('touchstart', (e) => {
+    // Touch (scoped to the canvas so layout UI keeps its synthesized clicks)
+    canvas.addEventListener('touchstart', (e) => {
       e.preventDefault();
       const t = e.touches[0];
       setTarget(t.clientX, t.clientY);
     }, { passive: false });
-    window.addEventListener('touchmove', (e) => {
+    canvas.addEventListener('touchmove', (e) => {
       e.preventDefault();
       const t = e.touches[0];
       setTarget(t.clientX, t.clientY);
     }, { passive: false });
-    window.addEventListener('touchend', clearTarget);
+    canvas.addEventListener('touchend', clearTarget);
 
     function tickSpring() {
       const tx = targetX === -9999 ? -9999 : targetX;
@@ -61,6 +61,7 @@ const { src: imageSrc, width: imageW, height: imageH } = src;
     // ── Image sampling ───────────────────────────────────────────────────────
     const img = new Image();
     img.onload = () => start(img);
+    img.onerror = () => console.error(`[one] failed to load image: ${imageSrc}`);
     img.src = imageSrc;
 
     function sampleImage(img: HTMLImageElement, spacing: number) {
@@ -128,6 +129,7 @@ const { src: imageSrc, width: imageW, height: imageH } = src;
           uBubbleZ:      { value: BUBBLE_Z },
           uBubbleSpread: { value: BUBBLE_SPREAD },
           uResolution:   { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+          uPixelRatio:   { value: 1 },
         },
         vertexShader: `
           attribute float brightness;
@@ -137,6 +139,7 @@ const { src: imageSrc, width: imageW, height: imageH } = src;
           uniform float uBubbleZ;
           uniform float uBubbleSpread;
           uniform vec2  uResolution;
+          uniform float uPixelRatio;
 
           varying float vBubble;
 
@@ -167,7 +170,7 @@ const { src: imageSrc, width: imageW, height: imageH } = src;
             vec3 liftedView = viewPos.xyz + toCamera * bubble * uBubbleZ;
 
             float pulse = 1.0 + 0.04 * sin(uTime * 1.2);
-            gl_PointSize = brightness * 6.0 * pulse * (1.0 + bubble * 0.3);
+            gl_PointSize = brightness * 6.0 * pulse * (1.0 + bubble * 0.3) * uPixelRatio;
             gl_Position  = projectionMatrix * vec4(liftedView, 1.0);
           }
         `,
@@ -195,6 +198,7 @@ const { src: imageSrc, width: imageW, height: imageH } = src;
       const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
       renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
       renderer.setSize(window.innerWidth, window.innerHeight);
+      material.uniforms.uPixelRatio.value = renderer.getPixelRatio();
 
       window.addEventListener('resize', () => {
         camera.aspect = window.innerWidth / window.innerHeight;
