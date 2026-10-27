@@ -1,0 +1,525 @@
+---
+---
+
+<canvas id="gs-canvas" style="position:fixed;inset:0;display:block;width:100%;height:100%;touch-action:none;"></canvas>
+
+<div
+  id="gs-controls"
+  style="position:fixed;top:64px;right:24px;font-family:monospace;font-size:11px;color:rgba(255,255,255,0.7);display:flex;flex-direction:column;gap:8px;min-width:200px;"
+>
+  <div style="display:flex;flex-direction:column;gap:2px;margin-bottom:2px;">
+    <span style="font-size:12px;color:rgba(255,255,255,0.9);letter-spacing:0.06em;">MODEL</span>
+    <span class="gs-sub" style="font-size:10px;color:rgba(255,255,255,0.4);line-height:1.4;">procedural or a real 3DGS capture — or drop a .splat / .ply</span>
+  </div>
+  <select
+    id="model-select"
+    style="background:#000;border:1px solid rgba(255,255,255,0.3);color:rgba(255,255,255,0.8);font-family:monospace;font-size:11px;padding:4px 6px;cursor:pointer;width:100%;"
+  >
+    <option value="knot" selected>Procedural knot</option>
+    <option value="nike">Sneaker · 8.7 MB</option>
+    <option value="plush">Plush toy · 9.0 MB</option>
+    <option value="train">Train scene · 33 MB</option>
+  </select>
+  <label
+    style="border:1px solid rgba(255,255,255,0.3);color:rgba(255,255,255,0.7);padding:4px 6px;cursor:pointer;text-align:center;letter-spacing:0.08em;"
+  >OPEN FILE [O]<input id="file-input" type="file" accept=".splat,.ply" hidden /></label>
+  <span id="status" style="font-size:10px;color:rgba(255,255,255,0.5);line-height:1.4;min-height:14px;"></span>
+
+  <div style="display:flex;flex-direction:column;gap:2px;margin:6px 0 2px;">
+    <span style="font-size:12px;color:rgba(255,255,255,0.9);letter-spacing:0.06em;">RENDER</span>
+    <span class="gs-sub" style="font-size:10px;color:rgba(255,255,255,0.4);line-height:1.4;">how each gaussian is drawn on screen</span>
+  </div>
+  <select
+    id="mode-select"
+    style="background:#000;border:1px solid rgba(255,255,255,0.3);color:rgba(255,255,255,0.8);font-family:monospace;font-size:11px;padding:4px 6px;cursor:pointer;width:100%;"
+  >
+    <option value="0" selected>Gaussians</option>
+    <option value="2">Ellipses (2σ)</option>
+    <option value="1">Centers</option>
+  </select>
+  <label style="display:flex;flex-direction:column;gap:3px;">
+    <span id="scale-label">splat scale: 1.00</span>
+    <input id="scale-range" type="range" min="0.05" max="2" step="0.01" value="1" style="accent-color:white;width:100%;" />
+  </label>
+</div>
+
+<div style="position:fixed;bottom:24px;right:24px;display:flex;gap:8px;">
+  <button
+    id="rotate-btn"
+    style="background:transparent;border:1px solid rgba(255,255,255,0.4);color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >AUTO-ROTATE [A]</button>
+  <button
+    id="reset-btn"
+    style="background:transparent;border:1px solid rgba(255,255,255,0.4);color:rgba(255,255,255,0.7);font-family:monospace;font-size:12px;padding:6px 14px;cursor:pointer;letter-spacing:0.08em;"
+  >RESET [R]</button>
+</div>
+
+<div
+  id="drop-hint"
+  style="position:fixed;inset:12px;border:1px dashed rgba(255,255,255,0.5);display:none;align-items:center;justify-content:center;font-family:monospace;font-size:13px;letter-spacing:0.08em;color:rgba(255,255,255,0.8);pointer-events:none;"
+>DROP .SPLAT / .PLY</div>
+
+<script>
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import SortWorker from './sort.worker.ts?worker';
+  import { parseAny, proceduralKnot, type SplatData } from './loaders';
+
+  const TEX_W = 2048;
+  const MAX_SPLATS = TEX_W * TEX_W;
+  const REMOTE = 'https://huggingface.co/cakewalk/splat-data/resolve/main/';
+  const MODELS: Record<string, string> = {
+    nike: REMOTE + 'nike.splat',
+    plush: REMOTE + 'plush.splat',
+    train: REMOTE + 'train.splat',
+  };
+
+  const vertexShader = /* glsl */ `
+    precision highp int;
+    uniform highp sampler2D uCenters;
+    uniform highp sampler2D uCovA;
+    uniform highp sampler2D uCovB;
+    uniform highp sampler2D uColors;
+    uniform vec2 uViewport;
+    uniform float uScale;
+    uniform int uMode;
+    attribute uint splatIndex;
+    varying vec4 vColor;
+    varying vec2 vPos;
+
+    void main() {
+      ivec2 uv = ivec2(int(splatIndex % ${TEX_W}u), int(splatIndex / ${TEX_W}u));
+      vec3 center = texelFetch(uCenters, uv, 0).xyz;
+      vec4 cam = modelViewMatrix * vec4(center, 1.0);
+      vec4 clip = projectionMatrix * cam;
+      float bound = 1.2 * clip.w;
+      if (clip.w <= 0.0 || abs(clip.x) > bound || abs(clip.y) > bound) {
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        return;
+      }
+      vColor = texelFetch(uColors, uv, 0);
+      vec2 ndc = clip.xy / clip.w;
+
+      vec2 axis1, axis2;
+      if (uMode == 1) {
+        // fixed-size dot at the center
+        axis1 = vec2(1.6, 0.0);
+        axis2 = vec2(0.0, 1.6);
+        vPos = position.xy;
+      } else {
+        vec4 a = texelFetch(uCovA, uv, 0);
+        vec2 b = texelFetch(uCovB, uv, 0).xy;
+        mat3 sigma = mat3(a.x, a.y, a.z, a.y, a.w, b.x, a.z, b.x, b.y) * (uScale * uScale);
+
+        // EWA splatting: Σ' = J W Σ Wᵀ Jᵀ, J = Jacobian of the perspective projection (pixels)
+        float d = -cam.z;
+        float fx = projectionMatrix[0][0] * uViewport.x * 0.5;
+        float fy = projectionMatrix[1][1] * uViewport.y * 0.5;
+        mat3 J = mat3(
+          fx / d, 0.0, 0.0,
+          0.0, fy / d, 0.0,
+          fx * cam.x / (d * d), fy * cam.y / (d * d), 0.0
+        );
+        mat3 T = J * mat3(modelViewMatrix);
+        mat3 cov = T * sigma * transpose(T);
+
+        // low-pass so sub-pixel splats still cover a pixel
+        float c00 = cov[0][0] + 0.3;
+        float c01 = cov[0][1];
+        float c11 = cov[1][1] + 0.3;
+        float mid = 0.5 * (c00 + c11);
+        float rad = length(vec2(0.5 * (c00 - c11), c01));
+        float l1 = mid + rad;
+        float l2 = max(mid - rad, 0.1);
+        vec2 e = vec2(c01, l1 - c00);
+        vec2 dir = dot(e, e) > 1e-12 ? normalize(e) : vec2(1.0, 0.0);
+
+        // quad spans ±3σ along both eigenvectors
+        axis1 = dir * min(sqrt(l1), 1024.0) * 3.0;
+        axis2 = vec2(dir.y, -dir.x) * min(sqrt(l2), 1024.0) * 3.0;
+        vPos = position.xy * 3.0;
+      }
+
+      vec2 offset = position.x * axis1 + position.y * axis2;
+      gl_Position = vec4(ndc + offset * 2.0 / uViewport, 0.0, 1.0);
+    }
+  `;
+
+  const fragmentShader = /* glsl */ `
+    uniform int uMode;
+    varying vec4 vColor;
+    varying vec2 vPos;
+
+    void main() {
+      float r2 = dot(vPos, vPos);
+      float alpha;
+      vec3 color = vColor.rgb;
+      if (uMode == 0) {
+        if (r2 > 9.0) discard;
+        alpha = vColor.a * exp(-0.5 * r2);
+      } else if (uMode == 1) {
+        if (r2 > 1.0) discard;
+        alpha = 1.0;
+      } else {
+        float r = sqrt(r2);
+        float ring = 1.0 - smoothstep(0.0, fwidth(r) * 1.5, abs(r - 2.0));
+        alpha = vColor.a * max(ring * 0.9, 0.05 * exp(-0.5 * r2));
+        color = mix(color, vec3(1.0), 0.15);
+      }
+      if (alpha < 1.0 / 255.0) discard;
+      gl_FragColor = vec4(color * alpha, alpha);
+    }
+  `;
+
+  // ---------- scene ----------
+
+  const canvas = document.getElementById('gs-canvas') as HTMLCanvasElement;
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+  renderer.setSize(window.innerWidth, window.innerHeight, false);
+  renderer.setClearColor(0x000000, 1);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 1000);
+  const controls = new OrbitControls(camera, canvas);
+  controls.enableDamping = true;
+  controls.autoRotate = true;
+  controls.autoRotateSpeed = 1.2;
+
+  const viewport = new THREE.Vector2();
+  renderer.getDrawingBufferSize(viewport);
+
+  const material = new THREE.ShaderMaterial({
+    vertexShader,
+    fragmentShader,
+    uniforms: {
+      uCenters: { value: null },
+      uCovA: { value: null },
+      uCovB: { value: null },
+      uColors: { value: null },
+      uViewport: { value: viewport },
+      uScale: { value: 1 },
+      uMode: { value: 0 },
+    },
+    transparent: true,
+    side: THREE.DoubleSide, // quad winding flips with the eigenvector basis
+    depthTest: false,
+    depthWrite: false,
+    premultipliedAlpha: true,
+    blending: THREE.CustomBlending,
+    blendSrc: THREE.OneFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendSrcAlpha: THREE.OneFactor,
+    blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+  });
+
+  let mesh: THREE.Mesh | null = null;
+  let order: THREE.InstancedBufferAttribute | null = null;
+  let splatCount = 0;
+  let home = { target: new THREE.Vector3(), position: new THREE.Vector3(0, 0, 5) };
+
+  function dataTexture(data: Float32Array | Uint8Array, h: number, format: THREE.PixelFormat, type: THREE.TextureDataType) {
+    const tex = new THREE.DataTexture(data, TEX_W, h, format, type);
+    tex.minFilter = tex.magFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  function disposeMesh() {
+    if (!mesh) return;
+    scene.remove(mesh);
+    mesh.geometry.dispose();
+    for (const k of ['uCenters', 'uCovA', 'uCovB', 'uColors']) {
+      (material.uniforms[k].value as THREE.Texture | null)?.dispose();
+      material.uniforms[k].value = null;
+    }
+    mesh = null;
+    order = null;
+  }
+
+  // ---------- sorting ----------
+
+  const worker = new SortWorker();
+  let gen = 0;
+  let sorting = false;
+  let sortMs = 0;
+  const lastView = new Float32Array(16).fill(1e9);
+  const modelView = new THREE.Matrix4();
+
+  worker.onmessage = (e: MessageEvent) => {
+    sorting = false;
+    const msg = e.data;
+    if (msg.type !== 'sorted' || msg.gen !== gen || !order || !mesh) return;
+    (order.array as Uint32Array).set(msg.order);
+    order.needsUpdate = true;
+    mesh.visible = true;
+    sortMs = msg.ms;
+    updateStatus();
+  };
+
+  function maybeSort() {
+    if (!mesh || sorting) return;
+    camera.updateMatrixWorld();
+    modelView.multiplyMatrices(camera.matrixWorldInverse, mesh.matrixWorld);
+    const e = modelView.elements;
+    const radius = home.position.distanceTo(home.target) || 1;
+    const turned = Math.abs(e[2] - lastView[2]) + Math.abs(e[6] - lastView[6]) + Math.abs(e[10] - lastView[10]);
+    const moved = Math.abs(e[14] - lastView[14]) / radius;
+    if (!(turned > 0.002 || moved > 0.002)) return;
+    lastView.set(e);
+    sorting = true;
+    worker.postMessage({ type: 'sort', view: Float32Array.from(e), gen });
+  }
+
+  // ---------- model loading ----------
+
+  function setSplats(d: SplatData) {
+    disposeMesh();
+    const n = Math.min(d.count, MAX_SPLATS);
+    const h = Math.ceil(n / TEX_W);
+    const size = TEX_W * h;
+
+    const centers = new Float32Array(size * 4);
+    const covA = new Float32Array(size * 4);
+    const covB = new Float32Array(size * 2);
+    const colors = new Uint8Array(size * 4);
+    for (let i = 0; i < n; i++) {
+      const p = i * 3, c = i * 6;
+      centers[i * 4] = d.positions[p];
+      centers[i * 4 + 1] = d.positions[p + 1];
+      centers[i * 4 + 2] = d.positions[p + 2];
+      covA[i * 4] = d.covariances[c];
+      covA[i * 4 + 1] = d.covariances[c + 1];
+      covA[i * 4 + 2] = d.covariances[c + 2];
+      covA[i * 4 + 3] = d.covariances[c + 3];
+      covB[i * 2] = d.covariances[c + 4];
+      covB[i * 2 + 1] = d.covariances[c + 5];
+    }
+    colors.set(d.colors.subarray(0, n * 4));
+
+    material.uniforms.uCenters.value = dataTexture(centers, h, THREE.RGBAFormat, THREE.FloatType);
+    material.uniforms.uCovA.value = dataTexture(covA, h, THREE.RGBAFormat, THREE.FloatType);
+    material.uniforms.uCovB.value = dataTexture(covB, h, THREE.RGFormat, THREE.FloatType);
+    material.uniforms.uColors.value = dataTexture(colors, h, THREE.RGBAFormat, THREE.UnsignedByteType);
+
+    const geo = new THREE.InstancedBufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), 3));
+    geo.setIndex([0, 1, 2, 0, 2, 3]);
+    order = new THREE.InstancedBufferAttribute(new Uint32Array(n), 1);
+    order.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute('splatIndex', order);
+    geo.instanceCount = n;
+
+    mesh = new THREE.Mesh(geo, material);
+    mesh.frustumCulled = false;
+    mesh.visible = false; // until the first sort lands
+    if (d.yDown) mesh.rotation.x = Math.PI;
+    mesh.updateMatrixWorld();
+    scene.add(mesh);
+    splatCount = n;
+
+    gen++;
+    worker.postMessage({ type: 'data', positions: d.positions.slice(0, n * 3), gen });
+    lastView.fill(1e9);
+    frame(d, n);
+  }
+
+  // Robust framing: median center + 85th-percentile radius, so stray floaters don't zoom us out
+  function frame(d: SplatData, n: number) {
+    const step = Math.max(1, Math.floor(n / 20000));
+    const xs: number[] = [], ys: number[] = [], zs: number[] = [];
+    for (let i = 0; i < n; i += step) {
+      xs.push(d.positions[i * 3]); ys.push(d.positions[i * 3 + 1]); zs.push(d.positions[i * 3 + 2]);
+    }
+    const median = (a: number[]) => a.slice().sort((p, q) => p - q)[a.length >> 1];
+    const c = new THREE.Vector3(median(xs), median(ys), median(zs));
+    const dists = xs.map((x, i) => Math.hypot(x - c.x, ys[i] - c.y, zs[i] - c.z)).sort((p, q) => p - q);
+    const radius = dists[Math.floor(dists.length * 0.85)] || 1;
+
+    c.applyMatrix4(mesh!.matrixWorld);
+    const dist = radius / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * 1.5;
+    home = {
+      target: c.clone(),
+      position: c.clone().add(new THREE.Vector3(0.35, 0.3, 1).normalize().multiplyScalar(dist)),
+    };
+    camera.near = dist * 0.005;
+    camera.far = dist * 50;
+    camera.updateProjectionMatrix();
+    resetView();
+  }
+
+  function resetView() {
+    controls.target.copy(home.target);
+    camera.position.copy(home.position);
+    controls.update();
+  }
+
+  const statusEl = document.getElementById('status')!;
+  let statusMsg = '';
+  function updateStatus() {
+    statusEl.textContent = statusMsg || `${splatCount.toLocaleString('en-US')} splats · sort ${sortMs.toFixed(1)} ms`;
+  }
+  function setStatus(msg: string) {
+    statusMsg = msg;
+    updateStatus();
+  }
+
+  const cache = new Map<string, SplatData>();
+  let loadToken = 0;
+  let abort: AbortController | null = null;
+
+  async function fetchBuffer(url: string, signal: AbortSignal, onProgress: (p: number) => void) {
+    const res = await fetch(url, { signal });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+    const total = Number(res.headers.get('content-length')) || 0;
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      got += value.length;
+      onProgress(total ? got / total : 0);
+    }
+    const out = new Uint8Array(got);
+    let o = 0;
+    for (const c of chunks) { out.set(c, o); o += c.length; }
+    return out.buffer;
+  }
+
+  async function loadModel(key: string) {
+    const token = ++loadToken;
+    abort?.abort();
+    abort = null;
+    try {
+      let d = cache.get(key);
+      if (!d) {
+        if (key === 'knot') {
+          setStatus('generating…');
+          await new Promise((r) => setTimeout(r, 16));
+          d = proceduralKnot();
+        } else {
+          abort = new AbortController();
+          const buf = await fetchBuffer(MODELS[key], abort.signal, (p) => {
+            if (token === loadToken) setStatus(`loading ${Math.round(p * 100)}%`);
+          });
+          d = parseAny(buf);
+        }
+        cache.set(key, d);
+      }
+      if (token !== loadToken) return;
+      setStatus('');
+      setSplats(d);
+    } catch (err) {
+      if (token !== loadToken || (err as Error).name === 'AbortError') return;
+      setStatus(`error: ${(err as Error).message}`);
+    }
+  }
+
+  async function loadFile(file: File) {
+    const token = ++loadToken;
+    abort?.abort();
+    setStatus(`reading ${file.name}…`);
+    try {
+      const d = parseAny(await file.arrayBuffer(), file.name);
+      if (token !== loadToken) return;
+      const key = 'file:' + file.name;
+      cache.set(key, d);
+      let opt = [...modelSelect.options].find((o) => o.value === key);
+      if (!opt) {
+        opt = new Option(file.name, key);
+        modelSelect.add(opt);
+      }
+      modelSelect.value = key;
+      setStatus(d.count > MAX_SPLATS ? `truncated to ${MAX_SPLATS.toLocaleString('en-US')} splats` : '');
+      setSplats(d);
+    } catch (err) {
+      if (token === loadToken) setStatus(`error: ${(err as Error).message}`);
+    }
+  }
+
+  // ---------- UI ----------
+
+  const modelSelect = document.getElementById('model-select') as HTMLSelectElement;
+  const modeSelect = document.getElementById('mode-select') as HTMLSelectElement;
+  const scaleRange = document.getElementById('scale-range') as HTMLInputElement;
+  const scaleLabel = document.getElementById('scale-label')!;
+  const fileInput = document.getElementById('file-input') as HTMLInputElement;
+  const rotateBtn = document.getElementById('rotate-btn')!;
+  const dropHint = document.getElementById('drop-hint')!;
+
+  modelSelect.addEventListener('change', () => {
+    const key = modelSelect.value;
+    if (key.startsWith('file:')) {
+      const d = cache.get(key);
+      if (d) { ++loadToken; setStatus(''); setSplats(d); }
+    } else {
+      loadModel(key);
+    }
+  });
+  modeSelect.addEventListener('change', () => {
+    material.uniforms.uMode.value = parseInt(modeSelect.value, 10);
+  });
+  scaleRange.addEventListener('input', () => {
+    const s = parseFloat(scaleRange.value);
+    material.uniforms.uScale.value = s;
+    scaleLabel.textContent = `splat scale: ${s.toFixed(2)}`;
+  });
+  fileInput.addEventListener('change', () => {
+    const f = fileInput.files?.[0];
+    if (f) loadFile(f);
+    fileInput.value = '';
+  });
+
+  function toggleRotate() {
+    controls.autoRotate = !controls.autoRotate;
+    rotateBtn.style.borderColor = controls.autoRotate ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.15)';
+    rotateBtn.style.color = controls.autoRotate ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.35)';
+  }
+  rotateBtn.addEventListener('click', toggleRotate);
+  document.getElementById('reset-btn')!.addEventListener('click', resetView);
+  window.addEventListener('keydown', (e) => {
+    if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'SELECT') return;
+    if (e.key === 'a' || e.key === 'A') toggleRotate();
+    if (e.key === 'r' || e.key === 'R') resetView();
+    if (e.key === 'o' || e.key === 'O') fileInput.click();
+  });
+
+  let dragDepth = 0;
+  window.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; dropHint.style.display = 'flex'; });
+  window.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; dropHint.style.display = 'none'; } });
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    dropHint.style.display = 'none';
+    const f = e.dataTransfer?.files[0];
+    if (f) loadFile(f);
+  });
+
+  if (window.matchMedia('(pointer: coarse)').matches) {
+    document.querySelectorAll<HTMLElement>('.gs-sub').forEach((el) => (el.style.display = 'none'));
+    (document.getElementById('gs-controls') as HTMLElement).style.minWidth = '160px';
+  }
+
+  function onResize() {
+    const W = window.innerWidth, H = window.innerHeight;
+    renderer.setSize(W, H, false);
+    renderer.getDrawingBufferSize(viewport);
+    camera.aspect = W / H;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', onResize);
+
+  function draw() {
+    controls.update();
+    maybeSort();
+    renderer.render(scene, camera);
+    requestAnimationFrame(draw);
+  }
+
+  loadModel('knot');
+  draw();
+</script>
