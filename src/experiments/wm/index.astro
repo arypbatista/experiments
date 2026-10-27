@@ -943,7 +943,8 @@ selMerge     .addEventListener('change', () => { ms.mergeMode = selMerge.value a
 
 // Keyboard shortcuts
 window.addEventListener('keydown', (e) => {
-  if ((e.target as HTMLElement).tagName === 'INPUT') return;
+  const tag = (e.target as HTMLElement).tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
   if (e.key === 'c' || e.key === 'C') closeAll();
   if (e.key === 'r' || e.key === 'R') restart();
   if (e.key === 'p' || e.key === 'P') reposition();
@@ -1034,6 +1035,8 @@ function genPalette(): string {
     </div>`).join('')}
   </div>`;
 }
+
+let infoTimer: ReturnType<typeof setTimeout> | undefined;
 
 function spawnExamples() {
   const vw = window.innerWidth;
@@ -1161,9 +1164,10 @@ function spawnExamples() {
     if (cm) cm.textContent = ms.canvasMode;
     if (st) st.textContent = ms.sticky  ? 'on' : 'off';
     if (co) co.textContent = ms.contain ? 'on' : 'off';
-    setTimeout(updateInfo, 400);
+    infoTimer = setTimeout(updateInfo, 400);
   }
-  setTimeout(updateInfo, 200);
+  clearTimeout(infoTimer);
+  infoTimer = setTimeout(updateInfo, 200);
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
