@@ -1,0 +1,187 @@
+---
+---
+
+<canvas id="c" style="position:fixed;inset:0;display:block;width:100%;height:100%;touch-action:none;"></canvas>
+<div id="labels" style="position:fixed;inset:0;pointer-events:none;display:none;font-family:monospace;font-size:10px;color:rgba(20,19,18,0.85);"></div>
+
+<script>
+  import * as THREE from 'three';
+  import { INK_URL, rng } from '../../lib/ink';
+  import { FACES, Breather } from './faces';
+
+  const N = FACES.length;
+
+  const fragmentShader = /* glsl */ `
+    #define N ${N}
+    uniform sampler2D uTex;
+    uniform vec2 uRes;
+    uniform vec2 uImg;
+    uniform float uFit;
+    uniform float uDebug;
+    uniform vec4 uReg[N];  // cx, cy, rx, ry (drawing px)
+    uniform vec4 uAnim[N]; // scale swell, lift px, breath level, hovered
+    varying vec2 vUv;
+
+    const vec3 PAPER = vec3(0.925, 0.922, 0.902);
+    const vec3 INK = vec3(0.078, 0.075, 0.07);
+
+    vec3 hue(float h) { return clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0); }
+
+    void main() {
+      // screen -> drawing px (y down), drawing fitted to 86% of the screen
+      vec2 p = (vUv - 0.5) * uRes;
+      vec2 q = vec2(p.x, -p.y) / uFit + uImg * 0.5;
+
+      // every face swells around its own center with a soft falloff, so
+      // overlapping heads blend into one continuous displacement field
+      vec2 off = vec2(0.0);
+      float dark = 0.0;
+      for (int i = 0; i < N; i++) {
+        vec4 r = uReg[i];
+        vec4 a = uAnim[i];
+        float d = length((q - r.xy) / r.zw);
+        float w = 1.0 - smoothstep(0.3, 1.3, d);
+        off += w * ((q - r.xy) * (a.x / (1.0 + a.x)) - vec2(0.0, a.y));
+        dark += w * max(a.z, 0.0);
+      }
+      vec2 src = q - off;
+      vec2 uv = vec2(src.x / uImg.x, 1.0 - src.y / uImg.y);
+
+      float ink = 1.0 - texture2D(uTex, uv).r;
+      // at full inhale the strokes thicken and darken a touch, like flushed skin
+      float soft = 1.0 - textureLod(uTex, uv, 1.6).r;
+      float k = clamp(dark * 0.32, 0.0, 0.5);
+      ink = mix(ink, max(ink, smoothstep(0.06, 0.4, soft)), k);
+      ink = clamp(ink * (1.0 + 0.25 * k), 0.0, 1.0);
+      if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) ink = 0.0;
+      vec3 col = mix(PAPER, INK, ink);
+
+      if (uDebug > 0.5) {
+        for (int i = 0; i < N; i++) {
+          vec4 r = uReg[i];
+          vec4 a = uAnim[i];
+          vec2 rr = r.zw * (1.0 + a.x);
+          float d = length((q - r.xy + vec2(0.0, a.y)) / rr);
+          vec3 c = hue(float(i) / float(N));
+          float line = 1.0 - smoothstep(0.0, 2.0 / uFit, abs(d - 1.0) * min(rr.x, rr.y));
+          col = mix(col, c * 0.8, line * (0.6 + 0.4 * a.w));
+          col = mix(col, c, step(d, 1.0) * (0.05 + 0.12 * clamp(a.z, 0.0, 1.5) + 0.1 * a.w));
+        }
+      }
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `;
+
+  const vertexShader = /* glsl */ `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
+  `;
+
+  const canvas = document.getElementById('c') as HTMLCanvasElement;
+  const labels = document.getElementById('labels') as HTMLDivElement;
+  const renderer = new THREE.WebGLRenderer({ canvas });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight, false);
+  renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+  const IMG_W = 569, IMG_H = 1000;
+  const fitScale = () => Math.min((window.innerWidth * 0.86) / IMG_W, (window.innerHeight * 0.86) / IMG_H);
+
+  const uniforms = {
+    uTex: { value: null as THREE.Texture | null },
+    uRes: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+    uImg: { value: new THREE.Vector2(IMG_W, IMG_H) },
+    uFit: { value: fitScale() },
+    uDebug: { value: new URLSearchParams(location.search).has('debug') ? 1 : 0 },
+    uReg: { value: FACES.map((f) => new THREE.Vector4(f.cx, f.cy, f.rx, f.ry)) },
+    uAnim: { value: FACES.map(() => new THREE.Vector4()) },
+  };
+  scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({ uniforms, vertexShader, fragmentShader })));
+
+  const rand = rng(4128);
+  const breathers = FACES.map((f) => new Breather(f, rand));
+
+  // debug labels
+  const labelEls = FACES.map(() => {
+    const el = document.createElement('div');
+    el.style.cssText = 'position:absolute;transform:translate(-50%,-50%);white-space:nowrap;text-align:center;background:rgba(236,235,230,0.75);padding:1px 4px;';
+    labels.appendChild(el);
+    return el;
+  });
+  const toScreen = (x: number, y: number) => {
+    const s = uniforms.uFit.value;
+    return [window.innerWidth / 2 + (x - IMG_W / 2) * s, window.innerHeight / 2 + (y - IMG_H / 2) * s];
+  };
+  const setDebug = (on: boolean) => {
+    uniforms.uDebug.value = on ? 1 : 0;
+    labels.style.display = on ? 'block' : 'none';
+  };
+  setDebug(uniforms.uDebug.value > 0.5);
+  window.addEventListener('keydown', (e) => {
+    if ((e.target as HTMLElement)?.closest?.('input,textarea,select')) return;
+    if (e.key === 'd' || e.key === 'D') setDebug(uniforms.uDebug.value < 0.5);
+  });
+
+  // pointer: the face under the cursor holds its breath
+  let pointer: [number, number] | null = null;
+  const toDrawing = (cx: number, cy: number): [number, number] => {
+    const s = uniforms.uFit.value;
+    return [(cx - window.innerWidth / 2) / s + IMG_W / 2, (cy - window.innerHeight / 2) / s + IMG_H / 2];
+  };
+  const coarse = window.matchMedia('(pointer: coarse)').matches;
+  canvas.addEventListener('pointermove', (e) => {
+    if (coarse && e.buttons === 0) return;
+    pointer = toDrawing(e.clientX, e.clientY);
+  });
+  canvas.addEventListener('pointerdown', (e) => { pointer = toDrawing(e.clientX, e.clientY); });
+  canvas.addEventListener('pointerup', () => { if (coarse) pointer = null; });
+  canvas.addEventListener('pointerleave', () => { pointer = null; });
+  canvas.addEventListener('pointercancel', () => { pointer = null; });
+
+  function hoveredIndex() {
+    if (!pointer) return -1;
+    let best = -1, bestD = 1;
+    FACES.forEach((f, i) => {
+      const d = Math.hypot((pointer![0] - f.cx) / f.rx, (pointer![1] - f.cy) / f.ry);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    return best;
+  }
+
+  new THREE.TextureLoader().load(INK_URL, (tex) => {
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+    uniforms.uTex.value = tex;
+    let last = performance.now();
+    renderer.setAnimationLoop(() => {
+      const now = performance.now();
+      const dt = Math.min((now - last) / 1000, 0.1);
+      last = now;
+      const hi = hoveredIndex();
+      const debug = uniforms.uDebug.value > 0.5;
+      breathers.forEach((b, i) => {
+        b.setHovered(i === hi);
+        b.update(dt);
+        const f = b.face;
+        uniforms.uAnim.value[i].set(f.depth * b.level, f.lift * b.level, b.level, b.hovered ? 1 : 0);
+        if (debug) {
+          const [x, y] = toScreen(f.cx, f.cy - f.lift * b.level);
+          const el = labelEls[i];
+          el.style.left = x + 'px';
+          el.style.top = y + 'px';
+          el.textContent = `${i} ${f.name} · ${f.temper} · ${b.state} ${b.level.toFixed(2)}`;
+        }
+      });
+      renderer.render(scene, camera);
+    });
+  });
+
+  window.addEventListener('resize', () => {
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
+    uniforms.uRes.value.set(window.innerWidth, window.innerHeight);
+    uniforms.uFit.value = fitScale();
+  });
+</script>
