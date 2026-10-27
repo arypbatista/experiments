@@ -36,10 +36,10 @@
       style="accent-color:white;width:100%;" />
   </label>
 
-  <label style="display:flex;flex-direction:column;gap:3px;">
-    <span id="forces-label">show forces: on</span>
-    <input id="forces-range" type="range" min="0" max="1" step="1" value="1"
-      style="accent-color:white;width:100%;" />
+  <label style="display:flex;flex-direction:row;align-items:center;gap:6px;cursor:pointer;">
+    <input id="forces-toggle" type="checkbox" checked
+      style="accent-color:white;cursor:pointer;margin:0;" />
+    <span>show forces</span>
   </label>
 
   <div style="display:flex;gap:6px;margin-top:4px;">
@@ -79,8 +79,7 @@
   const massLabel   = document.getElementById('mass-label')!;
   const speedRange  = document.getElementById('speed-range')  as HTMLInputElement;
   const speedLabel  = document.getElementById('speed-label')!;
-  const forcesRange = document.getElementById('forces-range') as HTMLInputElement;
-  const forcesLabel = document.getElementById('forces-label')!;
+  const forcesToggle = document.getElementById('forces-toggle') as HTMLInputElement;
 
   gRange.addEventListener('input', () => {
     G = parseFloat(gRange.value);
@@ -98,9 +97,8 @@
     SLING_SCALE = parseFloat(speedRange.value);
     speedLabel.textContent = `sling speed: ${SLING_SCALE.toFixed(1)}`;
   });
-  forcesRange.addEventListener('input', () => {
-    SHOW_FORCES = forcesRange.value === '1';
-    forcesLabel.textContent = `show forces: ${SHOW_FORCES ? 'on' : 'off'}`;
+  forcesToggle.addEventListener('change', () => {
+    SHOW_FORCES = forcesToggle.checked;
   });
 
   // ── Camera ───────────────────────────────────────────────────────────────
@@ -235,7 +233,8 @@
   }, { passive: false });
 
   // ── Physics ──────────────────────────────────────────────────────────────
-  interface ForcePair { i: number; j: number; f: number; }
+  // Store body refs, not indices — merges/splices below reorder `bodies`
+  interface ForcePair { bi: Body; bj: Body; f: number; }
   let lastForces: ForcePair[] = [];
 
   function physics(dt: number) {
@@ -250,7 +249,7 @@
         const dx = bodies[j].x - bodies[i].x;
         const dy = bodies[j].y - bodies[i].y;
         const r2 = Math.max(dx * dx + dy * dy, 36);
-        lastForces.push({ i, j, f: G * bodies[i].mass * bodies[j].mass / r2 });
+        lastForces.push({ bi: bodies[i], bj: bodies[j], f: G * bodies[i].mass * bodies[j].mass / r2 });
       }
     }
 
@@ -303,8 +302,10 @@
       if (bodies[i].dead) { bodies.splice(i, 1); continue; }
       // Escape: > 8× screen diagonal from origin
       const ox = W / 2, oy = H / 2;
-      if (Math.hypot(bodies[i].x - ox, bodies[i].y - oy) > Math.hypot(W, H) * 8)
+      if (Math.hypot(bodies[i].x - ox, bodies[i].y - oy) > Math.hypot(W, H) * 8) {
+        bodies[i].dead = true;
         bodies.splice(i, 1);
+      }
     }
   }
 
@@ -326,9 +327,8 @@
     // Force lines
     if (SHOW_FORCES && lastForces.length > 0) {
       const maxF = Math.max(...lastForces.map(p => p.f));
-      for (const { i, j, f } of lastForces) {
-        if (i >= bodies.length || j >= bodies.length) continue;
-        const bi = bodies[i], bj = bodies[j];
+      for (const { bi, bj, f } of lastForces) {
+        if (bi.dead || bj.dead) continue;
         const alpha = Math.min(0.65, (f / maxF) * 0.65);
         if (alpha < 0.03) continue;
         const grad = ctx.createLinearGradient(bi.x, bi.y, bj.x, bj.y);
@@ -382,6 +382,8 @@
   function onUp() {
     if (!dragging) return;
     dragging = false;
+    // Acceleration buffers are fixed-size — ignore spawns once full
+    if (bodies.length >= MAX_BODIES) return;
     // Slingshot: velocity opposite to pull direction
     const vx = (dragA.x - dragB.x) * SLING_SCALE;
     const vy = (dragA.y - dragB.y) * SLING_SCALE;

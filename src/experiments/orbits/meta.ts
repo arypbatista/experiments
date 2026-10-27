@@ -8,8 +8,8 @@ const meta: ExperimentMeta = {
   tags: ["physics", "canvas", "simulation"],
   date: "2026-04-11",
   notes:
-    "Drag to launch a new body. Drag direction = velocity. Bodies merge on collision.",
-  mobileNotes: "Tap and drag to launch bodies.",
+    "Drag to launch a new body (pull back, release). Scroll to zoom. R resets, F fits view.",
+  mobileNotes: "Tap and drag to launch bodies. Pinch to zoom.",
   thumbnail,
 };
 

@@ -27,7 +27,9 @@ f  = G * mi * mj / max(r², softening²)
 ax = f * dx / r³   (accumulated per body)
 ```
 
-Integrated with Euler at 8 sub-steps per frame (~0.006 s per sub-step at 60 fps).
+Softening = 6 px: the distance is clamped to at least 6 px in the force calculation.
+
+Integrated with semi-implicit (symplectic) Euler — velocity is updated first, then position uses the new velocity — at 8 sub-steps per frame (~0.002 s per sub-step at 60 fps).
 
 Collision detection: if distance < ri + rj, bodies merge. Momentum is conserved; the surviving body absorbs the dead body's mass and position (mass-weighted centroid).
 
@@ -39,6 +41,8 @@ Collision detection: if distance < ri + rj, bodies merge. Momentum is conserved;
 | `STAR_MASS` | 3,000,000 | Central star; gives stable orbits at the chosen radii |
 | Spawn mass | 1,000 | Mass of drag-launched bodies |
 | Sling speed | 2.5 | px drag length → px/s velocity multiplier |
+| Softening | 6 px | Minimum distance used in the force calculation |
+| `MAX_BODIES` | 128 | New launches are ignored once this many bodies exist |
 | Trail fade | 0.04 | Canvas alpha overlay per frame (~1 s tail at 60 fps) |
 
 ## Tuning tips
